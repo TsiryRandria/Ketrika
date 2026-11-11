@@ -1,0 +1,6 @@
+{
+  "name": "Ketrika",
+  "description": "Ketrika - Plateforme intelligente et tout-en-un de gestion personnelle : projets, tâches, finances, notes, carrières et assistant IA.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
