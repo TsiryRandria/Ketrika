@@ -130,9 +130,9 @@ export const NotesScreen: React.FC = () => {
 
   // Sample quick images to attach
   const sampleImages = [
-    'https://images.unsplash.com/photo-1539020140153-e479b8c22e70?auto=format&fit=crop&w=600&q=80',
-    'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=600&q=80',
-    'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=600&q=80',
+    '/assets/images/note_meeting.jpg',
+    '/assets/images/project_architecture.jpg',
+    '/assets/images/project_tech.jpg',
   ];
 
   // Textarea reference for inserting formatting at cursor

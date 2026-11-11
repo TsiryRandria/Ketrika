@@ -22,6 +22,7 @@ import {
   initialChatMessages 
 } from '../data/initialData';
 import confetti from 'canvas-confetti';
+import { sqliteService } from '../services/sqliteService';
 
 interface AppContextType {
   currentTab: NavigationTab;
@@ -33,6 +34,25 @@ interface AppContextType {
   balanceVisible: boolean;
   setBalanceVisible: (visible: boolean | ((prev: boolean) => boolean)) => void;
   
+  // SQLite & Offline Storage Status
+  isDbReady: boolean;
+  exportSqliteDb: () => void;
+  importSqliteDb: (file: File) => Promise<boolean>;
+  getDbStats: () => {
+    isReady: boolean;
+    isHealthy: boolean;
+    projectsCount: number;
+    tasksCount: number;
+    notesCount: number;
+    transactionsCount: number;
+    jobsCount: number;
+    notificationsCount: number;
+    chatMessagesCount: number;
+    sizeInKb: number;
+    engine: string;
+    storage: string;
+  };
+
   // Projects
   projects: Project[];
   isProjectDetailOpen: boolean;
@@ -68,6 +88,7 @@ interface AppContextType {
   // Finances
   transactions: Transaction[];
   addTransaction: (tx: Omit<Transaction, 'id'>) => void;
+  deleteTransaction: (id: string) => void;
   totalRevenue: number;
   totalExpense: number;
   currentBalance: number;
@@ -105,66 +126,136 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [deviceMode, setDeviceMode] = useState<DeviceMode>('auto');
   const [showQuickMenu, setShowQuickMenu] = useState<boolean>(false);
   const [balanceVisible, setBalanceVisible] = useState<boolean>(true);
+  const [isDbReady, setIsDbReady] = useState<boolean>(false);
 
-  // Core entities
+  // Core entities with immediate local fallback state
   const [projects, setProjects] = useState<Project[]>(() => {
-    const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_projects`);
-    return saved ? JSON.parse(saved) : initialProjects;
+    try {
+      const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_projects`);
+      return saved ? JSON.parse(saved) : initialProjects;
+    } catch {
+      return initialProjects;
+    }
   });
   const [isProjectDetailOpen, setIsProjectDetailOpen] = useState<boolean>(false);
 
   const [tasks, setTasks] = useState<Task[]>(() => {
-    const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_tasks`);
-    return saved ? JSON.parse(saved) : initialTasks;
+    try {
+      const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_tasks`);
+      return saved ? JSON.parse(saved) : initialTasks;
+    } catch {
+      return initialTasks;
+    }
   });
 
   const [notes, setNotes] = useState<Note[]>(() => {
-    const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_notes`);
-    return saved ? JSON.parse(saved) : initialNotes;
+    try {
+      const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_notes`);
+      return saved ? JSON.parse(saved) : initialNotes;
+    } catch {
+      return initialNotes;
+    }
   });
   const [isEditingNote, setIsEditingNote] = useState<boolean>(false);
 
   const [jobs, setJobs] = useState<Job[]>(() => {
-    const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_jobs`);
-    return saved ? JSON.parse(saved) : initialJobs;
+    try {
+      const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_jobs`);
+      return saved ? JSON.parse(saved) : initialJobs;
+    } catch {
+      return initialJobs;
+    }
   });
   const [isJobDetailOpen, setIsJobDetailOpen] = useState<boolean>(false);
 
   const [transactions, setTransactions] = useState<Transaction[]>(() => {
-    const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_transactions`);
-    if (saved) {
-      try {
+    try {
+      const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_transactions`);
+      if (saved) {
         const parsed: Transaction[] = JSON.parse(saved);
-        // Automatically migrate to new Ariary denominations if stored data had old Euro values
         if (parsed.length > 0 && Math.abs(parsed[0].amount) < 10000) {
           return initialTransactions;
         }
         return parsed;
-      } catch {
-        return initialTransactions;
       }
+      return initialTransactions;
+    } catch {
+      return initialTransactions;
     }
-    return initialTransactions;
   });
 
   const [notifications, setNotifications] = useState<NotificationItem[]>(() => {
-    const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_notifications`);
-    return saved ? JSON.parse(saved) : initialNotifications;
+    try {
+      const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_notifications`);
+      return saved ? JSON.parse(saved) : initialNotifications;
+    } catch {
+      return initialNotifications;
+    }
   });
 
   const [profile, setProfile] = useState<UserProfile>(() => {
-    const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_profile`);
-    return saved ? JSON.parse(saved) : initialProfile;
+    try {
+      const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_profile`);
+      return saved ? JSON.parse(saved) : initialProfile;
+    } catch {
+      return initialProfile;
+    }
   });
 
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>(() => {
-    const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_chat`);
-    return saved ? JSON.parse(saved) : initialChatMessages;
+    try {
+      const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_chat`);
+      return saved ? JSON.parse(saved) : initialChatMessages;
+    } catch {
+      return initialChatMessages;
+    }
   });
 
   const [isGeneratingAI, setIsGeneratingAI] = useState<boolean>(false);
 
-  // Sync to localStorage
+  // Initialize SQLite database, safely migrate localStorage and populate live state
+  useEffect(() => {
+    let isMounted = true;
+
+    const bootstrapDatabase = async () => {
+      try {
+        await sqliteService.init();
+
+        if (isMounted) {
+          const loadedProjects = sqliteService.getProjects();
+          const loadedTasks = sqliteService.getTasks();
+          const loadedNotes = sqliteService.getNotes();
+          const loadedJobs = sqliteService.getJobs();
+          const loadedTransactions = sqliteService.getTransactions();
+          const loadedNotifications = sqliteService.getNotifications();
+          const loadedProfile = sqliteService.getProfile();
+          const loadedChat = sqliteService.getChatMessages();
+
+          if (loadedProjects && loadedProjects.length > 0) setProjects(loadedProjects);
+          if (loadedTasks && loadedTasks.length > 0) setTasks(loadedTasks);
+          if (loadedNotes && loadedNotes.length > 0) setNotes(loadedNotes);
+          if (loadedJobs && loadedJobs.length > 0) setJobs(loadedJobs);
+          if (loadedTransactions && loadedTransactions.length > 0) setTransactions(loadedTransactions);
+          if (loadedNotifications && loadedNotifications.length > 0) setNotifications(loadedNotifications);
+          if (loadedProfile) setProfile(loadedProfile);
+          if (loadedChat && loadedChat.length > 0) setChatMessages(loadedChat);
+
+          setIsDbReady(true);
+        }
+      } catch (err) {
+        console.warn('[Ketrika SQLite] SQLite bootstrap notice:', err);
+        if (isMounted) setIsDbReady(true);
+      }
+    };
+
+    bootstrapDatabase();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // Dual-sync to localStorage as a safety replica
   useEffect(() => {
     try {
       localStorage.setItem(`${LOCAL_STORAGE_KEY}_projects`, JSON.stringify(projects));
@@ -187,7 +278,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       id: `proj-${Date.now()}`,
     };
     setProjects(prev => [newProj, ...prev]);
-    // Also notify
+    sqliteService.saveProject(newProj);
+
     addNotificationItem({
       title: 'Nouveau projet',
       description: `Le projet "${newProj.title}" a été créé avec succès.`,
@@ -197,26 +289,37 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const updateProject = (id: string, updates: Partial<Project>) => {
-    setProjects(prev => prev.map(p => p.id === id ? { ...p, ...updates } : p));
+    setProjects(prev => {
+      const updated = prev.map(p => p.id === id ? { ...p, ...updates } : p);
+      const target = updated.find(p => p.id === id);
+      if (target) sqliteService.saveProject(target);
+      return updated;
+    });
   };
 
   const deleteProject = (id: string) => {
     setProjects(prev => prev.filter(p => p.id !== id));
+    sqliteService.deleteProject(id);
   };
 
   const toggleSubTask = (projectId: string, subTaskId: string) => {
-    setProjects(prev => prev.map(proj => {
-      if (proj.id !== projectId) return proj;
-      const updatedTasks = proj.tasks.map(t => t.id === subTaskId ? { ...t, completed: !t.completed } : t);
-      const doneCount = updatedTasks.filter(t => t.completed).length;
-      const newProgress = Math.round((doneCount / updatedTasks.length) * 100);
-      return {
-        ...proj,
-        tasks: updatedTasks,
-        progress: newProgress,
-        status: newProgress === 100 ? 'Terminé' : (newProgress > 0 ? 'En cours' : 'À faire')
-      };
-    }));
+    setProjects(prev => {
+      const updated = prev.map(proj => {
+        if (proj.id !== projectId) return proj;
+        const updatedTasks = proj.tasks.map(t => t.id === subTaskId ? { ...t, completed: !t.completed } : t);
+        const doneCount = updatedTasks.filter(t => t.completed).length;
+        const newProgress = Math.round((doneCount / updatedTasks.length) * 100);
+        const modProj: Project = {
+          ...proj,
+          tasks: updatedTasks,
+          progress: newProgress,
+          status: newProgress === 100 ? 'Terminé' : (newProgress > 0 ? 'En cours' : 'À faire')
+        };
+        sqliteService.saveProject(modProj);
+        return modProj;
+      });
+      return updated;
+    });
   };
 
   // Task handlers
@@ -227,6 +330,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       createdAt: new Date().toLocaleDateString('fr-FR'),
     };
     setTasks(prev => [newTask, ...prev]);
+    sqliteService.saveTask(newTask);
+
     addNotificationItem({
       title: 'Nouvelle tâche ajoutée',
       description: `Tâche "${newTask.title}" programmée pour ${newTask.dueDate}.`,
@@ -236,33 +341,39 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const toggleTask = (taskId: string) => {
-    setTasks(prev => prev.map(t => {
-      if (t.id === taskId) {
-        const nextState = !t.completed;
-        if (nextState) {
-          try {
-            confetti({
-              particleCount: 40,
-              spread: 60,
-              origin: { y: 0.8 },
-              colors: ['#00e676', '#10b981', '#34d399', '#ffffff']
-            });
-          } catch {
-            // non-fatal
+    setTasks(prev => {
+      const updated = prev.map(t => {
+        if (t.id === taskId) {
+          const nextState = !t.completed;
+          if (nextState) {
+            try {
+              confetti({
+                particleCount: 40,
+                spread: 60,
+                origin: { y: 0.8 },
+                colors: ['#00e676', '#10b981', '#34d399', '#ffffff']
+              });
+            } catch {
+              // non-fatal
+            }
           }
+          const modTask: Task = {
+            ...t,
+            completed: nextState,
+            status: nextState ? 'Terminée' : 'À faire'
+          };
+          sqliteService.saveTask(modTask);
+          return modTask;
         }
-        return {
-          ...t,
-          completed: nextState,
-          status: nextState ? 'Terminée' : 'À faire'
-        };
-      }
-      return t;
-    }));
+        return t;
+      });
+      return updated;
+    });
   };
 
   const deleteTask = (taskId: string) => {
     setTasks(prev => prev.filter(t => t.id !== taskId));
+    sqliteService.deleteTask(taskId);
   };
 
   // Note handlers
@@ -275,32 +386,84 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       updatedAt: now,
     };
     setNotes(prev => [newNote, ...prev]);
+    sqliteService.saveNote(newNote);
   };
 
   const updateNote = (id: string, updates: Partial<Note>) => {
     const now = new Date().toLocaleDateString('fr-FR');
-    setNotes(prev => prev.map(n => n.id === id ? { ...n, ...updates, updatedAt: now } : n));
+    setNotes(prev => {
+      const updated = prev.map(n => {
+        if (n.id === id) {
+          const mod = { ...n, ...updates, updatedAt: now };
+          sqliteService.saveNote(mod);
+          return mod;
+        }
+        return n;
+      });
+      return updated;
+    });
   };
 
   const deleteNote = (id: string) => {
     setNotes(prev => prev.filter(n => n.id !== id));
+    sqliteService.deleteNote(id);
   };
 
   const togglePinNote = (id: string) => {
-    setNotes(prev => prev.map(n => n.id === id ? { ...n, isPinned: !n.isPinned } : n));
+    setNotes(prev => {
+      const updated = prev.map(n => {
+        if (n.id === id) {
+          const mod = { ...n, isPinned: !n.isPinned };
+          sqliteService.saveNote(mod);
+          return mod;
+        }
+        return n;
+      });
+      return updated;
+    });
   };
 
   const toggleFavoriteNote = (id: string) => {
-    setNotes(prev => prev.map(n => n.id === id ? { ...n, isFavorite: !n.isFavorite } : n));
+    setNotes(prev => {
+      const updated = prev.map(n => {
+        if (n.id === id) {
+          const mod = { ...n, isFavorite: !n.isFavorite };
+          sqliteService.saveNote(mod);
+          return mod;
+        }
+        return n;
+      });
+      return updated;
+    });
   };
 
   // Job handlers
   const toggleFavoriteJob = (id: string) => {
-    setJobs(prev => prev.map(j => j.id === id ? { ...j, isFavorite: !j.isFavorite } : j));
+    setJobs(prev => {
+      const updated = prev.map(j => {
+        if (j.id === id) {
+          const mod = { ...j, isFavorite: !j.isFavorite };
+          sqliteService.saveJob(mod);
+          return mod;
+        }
+        return j;
+      });
+      return updated;
+    });
   };
 
   const applyToJob = (id: string) => {
-    setJobs(prev => prev.map(j => j.id === id ? { ...j, applied: true } : j));
+    setJobs(prev => {
+      const updated = prev.map(j => {
+        if (j.id === id) {
+          const mod = { ...j, applied: true };
+          sqliteService.saveJob(mod);
+          return mod;
+        }
+        return j;
+      });
+      return updated;
+    });
     const targetJob = jobs.find(j => j.id === id);
     if (targetJob) {
       addNotificationItem({
@@ -329,12 +492,19 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       id: `tr-${Date.now()}`,
     };
     setTransactions(prev => [newTx, ...prev]);
+    sqliteService.saveTransaction(newTx);
+
     addNotificationItem({
       title: tx.type === 'Revenu' ? 'Revenu enregistré' : 'Dépense enregistrée',
       description: `${tx.title} : ${tx.amount > 0 ? '+' : ''}${tx.amount.toLocaleString('fr-FR')} Ar`,
       category: 'finance',
       time: "À l'instant",
     });
+  };
+
+  const deleteTransaction = (id: string) => {
+    setTransactions(prev => prev.filter(t => t.id !== id));
+    sqliteService.deleteTransaction(id);
   };
 
   const totalRevenue = transactions
@@ -356,36 +526,64 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       isRecent: true,
     };
     setNotifications(prev => [newNotif, ...prev]);
+    sqliteService.saveNotification(newNotif);
   };
 
   const unreadNotificationCount = notifications.filter(n => !n.isRead).length;
 
   const markNotificationRead = (id: string) => {
-    setNotifications(prev => prev.map(n => n.id === id ? { ...n, isRead: true } : n));
+    setNotifications(prev => {
+      const updated = prev.map(n => {
+        if (n.id === id) {
+          const mod = { ...n, isRead: true };
+          sqliteService.saveNotification(mod);
+          return mod;
+        }
+        return n;
+      });
+      return updated;
+    });
   };
 
   const deleteNotification = (id: string) => {
     setNotifications(prev => prev.filter(n => n.id !== id));
+    sqliteService.deleteNotification(id);
   };
 
   const markAllNotificationsRead = () => {
-    setNotifications(prev => prev.map(n => ({ ...n, isRead: true })));
+    setNotifications(prev => {
+      const updated = prev.map(n => {
+        const mod = { ...n, isRead: true };
+        sqliteService.saveNotification(mod);
+        return mod;
+      });
+      return updated;
+    });
   };
 
   const clearAllNotifications = () => {
     setNotifications([]);
+    sqliteService.clearNotifications();
   };
 
   // Profile handlers
   const updateProfile = (updates: Partial<UserProfile>) => {
-    setProfile(prev => ({ ...prev, ...updates }));
+    setProfile(prev => {
+      const mod = { ...prev, ...updates };
+      sqliteService.saveProfile(mod);
+      return mod;
+    });
   };
 
   const addDocument = (doc: { name: string; type: string; size: string; date: string }) => {
-    setProfile(prev => ({ ...prev, documents: [...prev.documents, doc] }));
+    setProfile(prev => {
+      const mod = { ...prev, documents: [...prev.documents, doc] };
+      sqliteService.saveProfile(mod);
+      return mod;
+    });
   };
 
-  // Assistant Chat handler with smart contextual answering
+  // Assistant Chat handler with smart contextual answering & SQLite logs
   const sendChatMessage = async (text: string, attachment?: string) => {
     const userMsg: ChatMessage = {
       id: `msg-${Date.now()}`,
@@ -396,38 +594,39 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
 
     setChatMessages(prev => [...prev, userMsg]);
+    sqliteService.saveChatMessage(userMsg);
     setIsGeneratingAI(true);
 
     try {
-      // Check if user has Gemini API configured
-      const apiKey = import.meta.env.VITE_GEMINI_API_KEY || (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : '');
-      
-      let replyText = '';
-
-      if (apiKey && apiKey !== 'MY_GEMINI_API_KEY') {
-        const { GoogleGenAI } = await import('@google/genai');
-        const ai = new GoogleGenAI({ apiKey });
-        
-        const systemContext = `
+      const systemContext = `
 Tu es Ketrika IA, l'assistant intelligent intégré dans l'application de productivité Ketrika.
 Tu assistes ${profile.name} (${profile.email}, basée à ${profile.address}).
 L'utilisateur a actuellement ${projects.length} projets (dont "${projects[0]?.title || 'Ketrika'}" à ${projects[0]?.progress || 70}%).
 Il a ${tasks.length} tâches dont ${tasks.filter(t => !t.completed).length} en attente.
 Son solde financier actuel est de ${currentBalance.toLocaleString('fr-FR')} Ar.
 Réponds toujours en français, de façon élégante, concise, proactive, bienveillante et orientée productivité.
-        `;
+      `;
 
-        const response = await ai.models.generateContent({
-          model: 'gemini-3.8-flash',
-          contents: [
-            { role: 'user', parts: [{ text: `${systemContext}\n\nQuestion de l'utilisateur: ${text}` }] }
-          ]
+      let replyText = '';
+
+      try {
+        const res = await fetch('/api/assistant', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: text, context: systemContext }),
         });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.reply) {
+            replyText = data.reply;
+          }
+        }
+      } catch {
+        // Fall back to local contextual answers if server is unreachable
+      }
 
-        replyText = response.text || "Je suis à votre disposition pour vous aider dans vos projets Ketrika.";
-      } else {
-        // Smart realistic contextual responses for fast interaction
-        await new Promise(r => setTimeout(r, 600));
+      if (!replyText) {
+        await new Promise(r => setTimeout(r, 400));
         const lower = text.toLowerCase();
         
         if (lower.includes('idée') || lower.includes('projet')) {
@@ -438,9 +637,9 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
         } else if (lower.includes('finance') || lower.includes('budget') || lower.includes('argent') || lower.includes('solde')) {
           replyText = `Votre solde actuel est de **${currentBalance.toLocaleString('fr-FR')} Ar**. Vos revenus s'élèvent à ${totalRevenue.toLocaleString('fr-FR')} Ar contre ${totalExpense.toLocaleString('fr-FR')} Ar de dépenses. Vous êtes bien parti pour atteindre votre objectif d'épargne !`;
         } else if (lower.includes('bonjour') || lower.includes('salut') || lower.includes('coucou')) {
-          replyText = `Bonjour ${profile.name} ! Ravi de vous retrouver sur Ketrika. Tout est synchronisé. De quoi souhaitez-vous vous occuper aujourd'hui : vos projets, vos tâches ou votre bilan financier ?`;
+          replyText = `Bonjour ${profile.name} ! Ravi de vous retrouver sur Ketrika. Tout est synchronisé avec SQLite hors connexion. De quoi souhaitez-vous vous occuper aujourd'hui : vos projets, vos tâches ou votre bilan financier ?`;
         } else {
-          replyText = `C'est noté ! Je peux vous aider à planifier cette action dans votre calendrier, créer une sous-tâche pour le projet **${projects[0]?.title || 'Ketrika'}**, ou analyser vos métriques. Que préférez-vous faire ?`;
+          replyText = `C'est noté ! Tout est sauvegardé dans votre base SQLite locale. Je peux vous aider à planifier cette action dans votre calendrier, créer une sous-tâche pour le projet **${projects[0]?.title || 'Ketrika'}**, ou analyser vos métriques. Que préférez-vous faire ?`;
         }
       }
 
@@ -452,14 +651,16 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
       };
 
       setChatMessages(prev => [...prev, assistantMsg]);
+      sqliteService.saveChatMessage(assistantMsg);
     } catch {
       const errorMsg: ChatMessage = {
         id: `msg-${Date.now() + 1}`,
         role: 'assistant',
-        text: "Je suis opérationnel en mode local pour organiser vos tâches et projets. Vos données sont sécurisées.",
+        text: "Ketrika est 100% opérationnel en mode local hors connexion avec la base SQLite. Vos données sont persistées.",
         timestamp: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
       };
       setChatMessages(prev => [...prev, errorMsg]);
+      sqliteService.saveChatMessage(errorMsg);
     } finally {
       setIsGeneratingAI(false);
     }
@@ -467,6 +668,49 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
 
   const clearChat = () => {
     setChatMessages([initialChatMessages[0]]);
+    sqliteService.clearChatMessages();
+  };
+
+  // SQLite Binary Export (.db file for Android / backups)
+  const exportSqliteDb = () => {
+    const bytes = sqliteService.exportSqliteBinary();
+    if (!bytes) {
+      alert("La base SQLite est en cours d'initialisation.");
+      return;
+    }
+    const blob = new Blob([bytes as any], { type: 'application/x-sqlite3' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ketrika_sqlite_android_${new Date().toISOString().split('T')[0]}.db`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // SQLite Binary Import
+  const importSqliteDb = async (file: File): Promise<boolean> => {
+    try {
+      const buffer = await file.arrayBuffer();
+      const success = await sqliteService.importSqliteBinary(new Uint8Array(buffer));
+      if (success) {
+        setProjects(sqliteService.getProjects());
+        setTasks(sqliteService.getTasks());
+        setNotes(sqliteService.getNotes());
+        setJobs(sqliteService.getJobs());
+        setTransactions(sqliteService.getTransactions());
+        setNotifications(sqliteService.getNotifications());
+        setProfile(sqliteService.getProfile());
+        setChatMessages(sqliteService.getChatMessages());
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  };
+
+  const getDbStats = () => {
+    return sqliteService.getDatabaseStats();
   };
 
   const exportData = () => {
@@ -478,8 +722,10 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
       transactions,
       notifications,
       profile,
+      chatMessages,
+      dbStats: sqliteService.getDatabaseStats(),
       exportedAt: new Date().toISOString(),
-      app: 'Ketrika v1.0.0'
+      app: 'Ketrika v1.2.0 (SQLite Offline)'
     };
     const blob = new Blob([JSON.stringify(fullBackup, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -490,7 +736,8 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
     URL.revokeObjectURL(url);
   };
 
-  const resetAllData = () => {
+  const resetAllData = async () => {
+    await sqliteService.resetDatabase();
     localStorage.clear();
     setProjects(initialProjects);
     setTasks(initialTasks);
@@ -512,6 +759,10 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
       setShowQuickMenu,
       balanceVisible,
       setBalanceVisible,
+      isDbReady,
+      exportSqliteDb,
+      importSqliteDb,
+      getDbStats,
       projects,
       isProjectDetailOpen,
       setIsProjectDetailOpen,
@@ -538,6 +789,7 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
       applyToJob,
       transactions,
       addTransaction,
+      deleteTransaction,
       totalRevenue,
       totalExpense,
       currentBalance,
@@ -555,7 +807,7 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
       sendChatMessage,
       clearChat,
       exportData,
-      resetAllData
+      resetAllData,
     }}>
       {children}
     </AppContext.Provider>

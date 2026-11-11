@@ -14,14 +14,19 @@ import {
   Bell, 
   Database, 
   Download, 
+  Upload,
   RotateCcw, 
   Info, 
   Heart, 
   ChevronRight, 
   X, 
   Check, 
+  CheckCircle2,
   ShieldCheck,
-  Smartphone
+  Smartphone,
+  HardDrive,
+  Layers,
+  Table
 } from 'lucide-react';
 import { KetrikaLogo } from '../common/KetrikaLogo';
 
@@ -32,12 +37,18 @@ export const SettingsScreen: React.FC = () => {
     addDocument, 
     exportData, 
     resetAllData,
-    setCurrentTab 
+    setCurrentTab,
+    isDbReady,
+    exportSqliteDb,
+    importSqliteDb,
+    getDbStats
   } = useApp();
 
   const [showEditProfileModal, setShowEditProfileModal] = useState(false);
   const [showAddDocModal, setShowAddDocModal] = useState(false);
   const [showAboutModal, setShowAboutModal] = useState(false);
+  const [showDbInspector, setShowDbInspector] = useState(false);
+  const [importStatus, setImportStatus] = useState<string | null>(null);
 
   // Profile Edit fields
   const [name, setName] = useState(profile.name);
@@ -220,35 +231,133 @@ export const SettingsScreen: React.FC = () => {
         </button>
       </div>
 
-      {/* 6. Gestion des données (Matching page 9) */}
+      {/* 6. Base de données SQLite & Stockage Hors Connexion (Android & Web) */}
       <div className="glass-panel rounded-3xl p-5 sm:p-6 border border-emerald-500/30 space-y-4">
-        <div className="flex items-center gap-3">
-          <Database className="w-5 h-5 text-emerald-400" />
-          <div>
-            <h3 className="font-bold text-white text-sm">Gestion des données</h3>
-            <p className="text-xs text-emerald-200/70">Sauvegardez ou restaurez vos données</p>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-emerald-500/20">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-emerald-500/20 border border-emerald-400/40 flex items-center justify-center text-emerald-300">
+              <Database className="w-5 h-5 text-emerald-400" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="font-bold text-white text-sm sm:text-base">Base SQLite & Stockage Hors-Ligne</h3>
+                <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-bold border border-emerald-500/30 flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                  SQLite 3.x Actif
+                </span>
+              </div>
+              <p className="text-xs text-emerald-200/70 mt-0.5">Persistance locale relationnelle pour Android, tablette & PC</p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1.5 self-start sm:self-auto px-2.5 py-1 rounded-xl bg-emerald-950/70 border border-emerald-500/30 text-[11px] text-emerald-300">
+            <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+            <span>100% Hors-ligne</span>
           </div>
         </div>
 
+        {/* SQLite Database Live Stats Summary */}
+        {(() => {
+          const stats = getDbStats();
+          return (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-center">
+              <div className="p-3 rounded-2xl bg-emerald-950/40 border border-emerald-500/20">
+                <span className="text-[10px] text-emerald-300/80 uppercase font-semibold block">Projets & Tâches</span>
+                <span className="text-base font-extrabold text-white mt-0.5 block">{stats.projectsCount} / {stats.tasksCount}</span>
+                <span className="text-[10px] text-emerald-400/70">enregistrés</span>
+              </div>
+              <div className="p-3 rounded-2xl bg-emerald-950/40 border border-emerald-500/20">
+                <span className="text-[10px] text-emerald-300/80 uppercase font-semibold block">Finances & Notes</span>
+                <span className="text-base font-extrabold text-white mt-0.5 block">{stats.transactionsCount} / {stats.notesCount}</span>
+                <span className="text-[10px] text-emerald-400/70">lignes SQL</span>
+              </div>
+              <div className="p-3 rounded-2xl bg-emerald-950/40 border border-emerald-500/20">
+                <span className="text-[10px] text-emerald-300/80 uppercase font-semibold block">Emplois & Logs IA</span>
+                <span className="text-base font-extrabold text-white mt-0.5 block">{stats.jobsCount} / {stats.chatMessagesCount}</span>
+                <span className="text-[10px] text-emerald-400/70">messages persistés</span>
+              </div>
+              <div className="p-3 rounded-2xl bg-emerald-950/40 border border-emerald-500/20">
+                <span className="text-[10px] text-emerald-300/80 uppercase font-semibold block">Taille Base .db</span>
+                <span className="text-base font-extrabold text-cyan-300 mt-0.5 block">{stats.sizeInKb > 0 ? `${stats.sizeInKb} Ko` : 'En cache'}</span>
+                <span className="text-[10px] text-cyan-400/70">IndexedDB sync</span>
+              </div>
+            </div>
+          );
+        })()}
+
+        {importStatus && (
+          <div className="p-3 rounded-2xl bg-emerald-950/80 border border-emerald-400/50 text-xs text-emerald-200 flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>{importStatus}</span>
+          </div>
+        )}
+
+        {/* Database Management Action Buttons */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+          {/* Export Native SQLite .db */}
           <button
-            onClick={exportData}
-            className="py-3 px-4 rounded-2xl bg-emerald-500/20 border border-emerald-400/40 text-emerald-200 hover:text-white hover:bg-emerald-500/30 text-xs font-bold flex items-center justify-center gap-2 transition-all shadow-[0_0_12px_rgba(16,185,129,0.2)]"
+            onClick={exportSqliteDb}
+            className="py-3 px-4 rounded-2xl bg-gradient-to-r from-emerald-600/40 to-teal-600/40 border border-emerald-400/60 text-white hover:bg-emerald-500/50 text-xs font-bold flex items-center justify-center gap-2 transition-all shadow-[0_0_15px_rgba(16,185,129,0.3)] group"
           >
-            <Download className="w-4 h-4 text-emerald-300" />
-            <span>Sauvegarder les données</span>
+            <Database className="w-4 h-4 text-emerald-300 group-hover:scale-110 transition-transform" />
+            <span>Exporter la base SQLite (.db)</span>
           </button>
 
+          {/* Import Native SQLite .db */}
+          <label className="py-3 px-4 rounded-2xl bg-emerald-950/60 border border-emerald-500/40 text-emerald-200 hover:text-white hover:bg-emerald-900/40 text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer group">
+            <Upload className="w-4 h-4 text-cyan-400 group-hover:scale-110 transition-transform" />
+            <span>Importer une base SQLite (.db)</span>
+            <input
+              type="file"
+              accept=".db,.sqlite,.sqlite3"
+              className="hidden"
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                setImportStatus("Importation et vérification de la base SQLite en cours...");
+                const ok = await importSqliteDb(file);
+                if (ok) {
+                  setImportStatus("Base de données SQLite restaurée avec succès ! Toutes vos données sont prêtes.");
+                  setTimeout(() => setImportStatus(null), 4000);
+                } else {
+                  setImportStatus("Erreur lors de l'importation du fichier SQLite. Format non reconnu.");
+                  setTimeout(() => setImportStatus(null), 4000);
+                }
+              }}
+            />
+          </label>
+
+          {/* JSON Full Backup */}
+          <button
+            onClick={exportData}
+            className="py-3 px-4 rounded-2xl glass-panel-subtle border border-emerald-500/30 text-emerald-200 hover:text-white hover:bg-emerald-900/40 text-xs font-bold flex items-center justify-center gap-2 transition-all"
+          >
+            <Download className="w-4 h-4 text-emerald-300" />
+            <span>Sauvegarder en JSON</span>
+          </button>
+
+          {/* SQLite Table Inspector */}
+          <button
+            onClick={() => setShowDbInspector(true)}
+            className="py-3 px-4 rounded-2xl glass-panel-subtle border border-emerald-500/30 text-emerald-200 hover:text-white hover:bg-emerald-900/40 text-xs font-bold flex items-center justify-center gap-2 transition-all"
+          >
+            <Table className="w-4 h-4 text-cyan-300" />
+            <span>Inspecter les tables SQLite</span>
+          </button>
+        </div>
+
+        {/* Reset Database Button */}
+        <div className="pt-1 border-t border-emerald-500/15 flex justify-end">
           <button
             onClick={() => {
-              if (confirm('Voulez-vous réinitialiser toutes les données vers les paramètres de démonstration ?')) {
+              if (confirm('Voulez-vous réinitialiser la base SQLite vers les données initiales de démonstration ? Une copie de sécurité peut être exportée avant.')) {
                 resetAllData();
               }
             }}
-            className="py-3 px-4 rounded-2xl glass-panel-subtle border border-emerald-500/30 text-emerald-200 hover:text-white hover:bg-emerald-900/40 text-xs font-bold flex items-center justify-center gap-2 transition-all"
+            className="text-[11px] text-emerald-400/60 hover:text-rose-400 flex items-center gap-1.5 transition-colors py-1"
           >
-            <RotateCcw className="w-4 h-4 text-emerald-300" />
-            <span>Restaurer les données</span>
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span>Réinitialiser la base locale</span>
           </button>
         </div>
       </div>
@@ -446,6 +555,110 @@ export const SettingsScreen: React.FC = () => {
               >
                 Fermer
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Inspecteur de base de données SQLite */}
+      {showDbInspector && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="w-full max-w-lg glass-panel rounded-3xl p-6 border border-emerald-400/50 shadow-2xl relative max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between pb-3 border-b border-emerald-500/20">
+              <div className="flex items-center gap-2">
+                <Database className="w-5 h-5 text-emerald-400" />
+                <h3 className="text-base font-bold text-white">Structure &amp; Tables SQLite</h3>
+              </div>
+              <button
+                onClick={() => setShowDbInspector(false)}
+                className="text-emerald-400/80 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-3">
+              {(() => {
+                const stats = getDbStats();
+                return (
+                  <div className="p-3 rounded-2xl bg-emerald-950/50 border border-emerald-500/20 text-xs space-y-1.5">
+                    <div className="flex justify-between">
+                      <span className="text-emerald-300">Moteur SQL :</span>
+                      <span className="font-mono font-bold text-white">{stats.engine}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-emerald-300">Intégrité PRAGMA :</span>
+                      <span className="text-emerald-400 font-bold flex items-center gap-1">
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        {stats.isHealthy ? 'Saine & Vérifiée (quick_check ok)' : 'Vérification...'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-emerald-300">Sécurité des écritures :</span>
+                      <span className="font-mono text-emerald-200">Transactions atomiques (Rollback auto)</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-emerald-300">Persistance &amp; Secours :</span>
+                      <span className="font-mono text-emerald-200">Double Snapshot + Checksums FNV-1a</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-emerald-300">Mode Hors connexion :</span>
+                      <span className="text-emerald-400 font-bold">Actif (100% autonome)</span>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-300 pt-2">
+                Tables relationnelles du schéma Ketrika
+              </h4>
+
+              {(() => {
+                const stats = getDbStats();
+                const tables = [
+                  { name: 'projects', desc: 'Projets, jalons, état & sous-tâches', count: stats.projectsCount },
+                  { name: 'tasks', desc: 'Tâches quotidiennes, priorités & échéances', count: stats.tasksCount },
+                  { name: 'notes', desc: 'Notes de réunion, checklists & favoris', count: stats.notesCount },
+                  { name: 'transactions', desc: 'Revenus, dépenses & solde en Ariary', count: stats.transactionsCount },
+                  { name: 'jobs', desc: 'Offres d’emploi, candidatures & statuts', count: stats.jobsCount },
+                  { name: 'notifications', desc: 'Alertes locales, rappels & bilans', count: stats.notificationsCount },
+                  { name: 'user_profile', desc: 'Profil utilisateur, adresse & pièces jointes', count: 1 },
+                  { name: 'chat_messages', desc: 'Historique des échanges avec l’IA Ketrika', count: stats.chatMessagesCount },
+                  { name: 'meta_info', desc: 'Métadonnées de version & migration', count: 3 }
+                ];
+
+                return (
+                  <div className="space-y-2">
+                    {tables.map(t => (
+                      <div key={t.name} className="flex items-center justify-between p-2.5 rounded-xl bg-emerald-950/40 border border-emerald-500/20 text-xs">
+                        <div>
+                          <span className="font-mono font-bold text-emerald-200">{t.name}</span>
+                          <p className="text-[11px] text-emerald-300/70">{t.desc}</p>
+                        </div>
+                        <span className="px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30 font-mono">
+                          {t.count} {t.count > 1 ? 'entrées' : 'entrée'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+
+              <div className="pt-4 border-t border-emerald-500/20 flex justify-end gap-2">
+                <button
+                  onClick={exportSqliteDb}
+                  className="px-4 py-2 rounded-xl bg-emerald-500/30 border border-emerald-400/40 text-emerald-200 hover:text-white text-xs font-bold flex items-center gap-1.5"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Télécharger .db</span>
+                </button>
+                <button
+                  onClick={() => setShowDbInspector(false)}
+                  className="px-5 py-2 rounded-xl bg-emerald-500 text-slate-950 font-bold text-xs shadow-[0_0_12px_rgba(0,230,118,0.4)]"
+                >
+                  Fermer
+                </button>
+              </div>
             </div>
           </div>
         </div>

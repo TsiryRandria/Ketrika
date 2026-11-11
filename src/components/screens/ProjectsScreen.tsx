@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
 import { Project } from '../../types';
 import { 
@@ -19,7 +19,9 @@ import {
   Layers, 
   Tag,
   ArrowLeft,
-  Sparkles
+  Sparkles,
+  Upload,
+  Image as ImageIcon
 } from 'lucide-react';
 
 export const ProjectsScreen: React.FC = () => {
@@ -38,24 +40,27 @@ export const ProjectsScreen: React.FC = () => {
   // Selected project for full-page dedicated view
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
 
-  // Sync project detail open state with app context so TopBar is hidden exclusively on detail page
-  useEffect(() => {
-    setIsProjectDetailOpen(Boolean(selectedProjectId));
-    return () => {
-      setIsProjectDetailOpen(false);
-    };
-  }, [selectedProjectId, setIsProjectDetailOpen]);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [newSubTaskText, setNewSubTaskText] = useState('');
 
-  // New Project Form state
+  // Sync project detail / create open state with app context so TopBar is hidden exclusively
+  useEffect(() => {
+    setIsProjectDetailOpen(Boolean(selectedProjectId || showCreateModal));
+    return () => {
+      setIsProjectDetailOpen(false);
+    };
+  }, [selectedProjectId, showCreateModal, setIsProjectDetailOpen]);
+
+  // New Project Form state (Category field completely removed, logo upload added)
   const [newTitle, setNewTitle] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [newPriority, setNewPriority] = useState<'Haute' | 'Moyenne' | 'Basse'>('Haute');
-  const [newCategory, setNewCategory] = useState('Développement');
-  const [newStartDate, setNewStartDate] = useState('25/04/2025');
-  const [newEndDate, setNewEndDate] = useState('15/05/2025');
+  const [newStartDate, setNewStartDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [newEndDate, setNewEndDate] = useState(() => new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString().split('T')[0]);
+  const [newImage, setNewImage] = useState<string>('/assets/images/project_code.jpg');
+  const [isCustomLogo, setIsCustomLogo] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Edit Project Form state
   const [editTitle, setEditTitle] = useState('');
@@ -103,20 +108,34 @@ export const ProjectsScreen: React.FC = () => {
     }
   };
 
+  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      if (typeof reader.result === 'string') {
+        setNewImage(reader.result);
+        setIsCustomLogo(true);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
   const handleCreateProject = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTitle.trim()) return;
 
     addProject({
-      title: newTitle,
-      description: newDesc || 'Projet stratégique géré sur Ketrika.',
+      title: newTitle.trim(),
+      description: newDesc.trim() || 'Projet stratégique géré sur Ketrika.',
       startDate: newStartDate,
       endDate: newEndDate,
       priority: newPriority,
       status: 'En cours',
       progress: 0,
-      category: newCategory,
-      image: 'https://images.unsplash.com/photo-1498050108023-c5249f4df085?auto=format&fit=crop&w=800&q=80',
+      category: 'Général',
+      image: newImage || '/assets/images/project_code.jpg',
       tasks: [
         { id: `sub-${Date.now()}-1`, text: 'Définir les exigences et jalons', completed: false },
         { id: `sub-${Date.now()}-2`, text: 'Exécution et suivi technique', completed: false },
@@ -127,6 +146,8 @@ export const ProjectsScreen: React.FC = () => {
 
     setNewTitle('');
     setNewDesc('');
+    setNewImage('/assets/images/project_code.jpg');
+    setIsCustomLogo(false);
     setShowCreateModal(false);
   };
 
@@ -262,7 +283,7 @@ export const ProjectsScreen: React.FC = () => {
             {/* Cover Image */}
             <div className="w-full md:w-56 h-48 sm:h-52 rounded-2xl overflow-hidden shrink-0 border border-emerald-500/30 relative shadow-md">
               <img
-                src={activeProject.image || 'https://images.unsplash.com/photo-1498050108023-c5249f4df085?auto=format&fit=crop&w=800&q=80'}
+                src={activeProject.image || '/assets/images/project_code.jpg'}
                 alt={activeProject.title}
                 className="w-full h-full object-cover"
               />
@@ -550,6 +571,231 @@ export const ProjectsScreen: React.FC = () => {
   }
 
   // ==========================================
+  // DEDICATED FULL-PAGE CREATE PROJECT VIEW
+  // Occupies full available width & height, no boxed frame, only Back button top-left
+  // ==========================================
+  if (showCreateModal) {
+    return (
+      <div className="w-full min-h-[calc(100vh-100px)] flex flex-col justify-between max-w-4xl mx-auto px-2 sm:px-6 py-4 animate-in fade-in duration-200">
+        <form onSubmit={handleCreateProject} className="flex-1 flex flex-col justify-between space-y-8">
+          
+          {/* Top Row: ONLY Back Button in the top-left */}
+          <div className="flex items-center pb-2">
+            <button
+              type="button"
+              onClick={() => {
+                setShowCreateModal(false);
+                setNewTitle('');
+                setNewDesc('');
+              }}
+              className="p-3 rounded-2xl bg-emerald-950/70 border border-emerald-500/30 text-emerald-300 hover:text-white hover:border-emerald-400 hover:bg-emerald-900/60 transition-all flex items-center justify-center shrink-0 group select-none shadow-[0_0_15px_rgba(0,230,118,0.15)] cursor-pointer"
+              title="Retour aux projets"
+              aria-label="Retour aux projets"
+            >
+              <ArrowLeft className="w-5 h-5 group-hover:-translate-x-1 transition-transform text-emerald-400" />
+            </button>
+          </div>
+
+          {/* Form Content directly on the canvas without excessive outer framing */}
+          <div className="space-y-8 flex-1">
+            
+            {/* Visual & Logo Section: Add or import project logo */}
+            <div className="flex flex-col sm:flex-row sm:items-center gap-5 pb-6 border-b border-emerald-500/20">
+              {/* Logo / Cover Preview */}
+              <div className="relative group w-24 h-24 sm:w-28 sm:h-28 rounded-3xl overflow-hidden shrink-0 border-2 border-emerald-400/50 shadow-[0_0_25px_rgba(16,185,129,0.3)] bg-emerald-950/80">
+                <img
+                  src={newImage}
+                  alt="Logo du projet"
+                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="absolute inset-0 bg-slate-950/75 opacity-0 group-hover:opacity-100 flex flex-col items-center justify-center text-emerald-300 transition-opacity p-2 text-center cursor-pointer"
+                  title="Changer le logo"
+                >
+                  <Upload className="w-5 h-5 mb-1" />
+                  <span className="text-[10px] font-bold">Changer</span>
+                </button>
+              </div>
+
+              {/* Logo actions & Presets */}
+              <div className="flex-1 space-y-3">
+                <div className="flex flex-wrap items-center gap-3">
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    accept="image/*"
+                    onChange={handleLogoUpload}
+                    className="hidden"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="px-4 py-2.5 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 hover:text-white hover:bg-emerald-500/30 text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-[0_0_12px_rgba(16,185,129,0.2)]"
+                  >
+                    <Upload className="w-4 h-4 text-emerald-400" />
+                    <span>{isCustomLogo ? 'Remplacer le logo importé' : 'Importer un logo'}</span>
+                  </button>
+
+                  {isCustomLogo && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNewImage('/assets/images/project_code.jpg');
+                        setIsCustomLogo(false);
+                      }}
+                      className="px-3 py-2 rounded-xl text-emerald-400/60 hover:text-rose-400 text-xs font-semibold transition-colors cursor-pointer"
+                    >
+                      Réinitialiser
+                    </button>
+                  )}
+                </div>
+
+                {/* Preset suggestions */}
+                <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pt-1">
+                  <span className="text-[11px] text-emerald-400/60 font-medium shrink-0">
+                    Ou choisir un thème :
+                  </span>
+                  {[
+                    { label: 'Code & Tech', url: '/assets/images/project_code.jpg' },
+                    { label: 'Architecture', url: '/assets/images/project_architecture.jpg' },
+                    { label: 'Écologie', url: '/assets/images/project_eco.jpg' },
+                    { label: 'Cloud & Mobile', url: '/assets/images/project_tech.jpg' },
+                  ].map((preset) => (
+                    <button
+                      key={preset.url}
+                      type="button"
+                      onClick={() => {
+                        setNewImage(preset.url);
+                        setIsCustomLogo(false);
+                      }}
+                      className={`px-3 py-1 rounded-xl text-xs font-semibold transition-all shrink-0 cursor-pointer ${
+                        newImage === preset.url && !isCustomLogo
+                          ? 'bg-emerald-400 text-slate-950 font-bold shadow-[0_0_10px_#34d399]'
+                          : 'bg-emerald-950/50 text-emerald-300/80 hover:text-white border border-emerald-500/20'
+                      }`}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Field: Nom du projet */}
+            <div className="space-y-2">
+              <label className="block text-xs font-bold uppercase tracking-widest text-emerald-400/80">
+                Nom du projet *
+              </label>
+              <input
+                type="text"
+                required
+                autoFocus
+                placeholder="Ex : Refonte Plateforme Ketrika"
+                value={newTitle}
+                onChange={(e) => setNewTitle(e.target.value)}
+                className="w-full text-2xl sm:text-4xl font-extrabold text-white placeholder:text-emerald-400/25 bg-transparent border-b-2 border-emerald-500/25 focus:border-emerald-400 outline-none pb-3 transition-colors tracking-tight"
+              />
+            </div>
+
+            {/* Field: Description */}
+            <div className="space-y-2">
+              <label className="block text-xs font-bold uppercase tracking-widest text-emerald-400/80">
+                Description
+              </label>
+              <textarea
+                rows={3}
+                placeholder="Décrivez les objectifs clés, les livrables attendus et l'impact..."
+                value={newDesc}
+                onChange={(e) => setNewDesc(e.target.value)}
+                className="w-full text-base sm:text-lg text-emerald-100 placeholder:text-emerald-400/25 bg-transparent border-b border-emerald-500/20 focus:border-emerald-400 outline-none py-3 resize-none transition-colors leading-relaxed"
+              />
+            </div>
+
+            {/* Field: Priorité */}
+            <div className="space-y-3">
+              <label className="block text-xs font-bold uppercase tracking-widest text-emerald-400/80">
+                Priorité
+              </label>
+              <div className="flex flex-wrap gap-3">
+                {(['Haute', 'Moyenne', 'Basse'] as const).map((p) => {
+                  const isSelected = newPriority === p;
+                  return (
+                    <button
+                      key={p}
+                      type="button"
+                      onClick={() => setNewPriority(p)}
+                      className={`px-5 py-2.5 rounded-2xl text-xs sm:text-sm font-bold transition-all flex items-center gap-2 cursor-pointer ${
+                        isSelected
+                          ? p === 'Haute'
+                            ? 'bg-rose-500/25 text-rose-300 border border-rose-500/60 shadow-[0_0_15px_rgba(244,63,94,0.3)]'
+                            : p === 'Moyenne'
+                            ? 'bg-amber-500/25 text-amber-300 border border-amber-500/60 shadow-[0_0_15px_rgba(245,158,11,0.3)]'
+                            : 'bg-emerald-500/25 text-emerald-300 border border-emerald-500/60 shadow-[0_0_15px_rgba(16,185,129,0.3)]'
+                          : 'bg-emerald-950/40 border border-emerald-500/20 text-emerald-200/60 hover:text-white hover:border-emerald-500/40'
+                      }`}
+                    >
+                      <Flag className={`w-3.5 h-3.5 ${p === 'Haute' ? 'text-rose-400' : p === 'Moyenne' ? 'text-amber-400' : 'text-emerald-400'}`} />
+                      <span>Priorité {p}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Fields: Date de début & Échéance (Harmonious 2-column grid directly in the page) */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 pt-2">
+              <div className="space-y-2">
+                <label className="block text-xs font-bold uppercase tracking-widest text-emerald-400/80 flex items-center gap-1.5">
+                  <Calendar className="w-4 h-4 text-emerald-400" />
+                  Date de début
+                </label>
+                <input
+                  type="date"
+                  value={newStartDate}
+                  onChange={(e) => setNewStartDate(e.target.value)}
+                  className="w-full px-4 py-3 rounded-2xl bg-emerald-950/40 border border-emerald-500/25 text-white text-sm focus:border-emerald-400 focus:outline-none transition-colors [color-scheme:dark]"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-xs font-bold uppercase tracking-widest text-emerald-400/80 flex items-center gap-1.5">
+                  <Clock className="w-4 h-4 text-emerald-400" />
+                  Échéance
+                </label>
+                <input
+                  type="date"
+                  value={newEndDate}
+                  onChange={(e) => setNewEndDate(e.target.value)}
+                  className="w-full px-4 py-3 rounded-2xl bg-emerald-950/40 border border-emerald-500/25 text-white text-sm focus:border-emerald-400 focus:outline-none transition-colors [color-scheme:dark]"
+                />
+              </div>
+            </div>
+
+          </div>
+
+          {/* Bottom Action Area */}
+          <div className="pt-8 flex flex-col sm:flex-row items-center justify-between gap-4 border-t border-emerald-500/15">
+            <p className="text-xs text-emerald-400/60 text-center sm:text-left">
+              Sauvegarde instantanée dans votre base locale SQLite hors connexion.
+            </p>
+            <button
+              type="submit"
+              disabled={!newTitle.trim()}
+              className="w-full sm:w-auto px-8 py-3.5 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-400 text-slate-950 font-extrabold text-sm shadow-[0_0_25px_rgba(0,230,118,0.4)] hover:shadow-[0_0_35px_rgba(0,230,118,0.6)] hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-40 disabled:hover:scale-100 flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <Sparkles className="w-4 h-4 text-slate-950 stroke-[2.5]" />
+              <span>Créer le projet</span>
+            </button>
+          </div>
+
+        </form>
+      </div>
+    );
+  }
+
+  // ==========================================
   // MAIN PROJECTS LIST VIEW (GRID)
   // ==========================================
   return (
@@ -656,7 +902,7 @@ export const ProjectsScreen: React.FC = () => {
                     {/* Project Card Image Banner */}
                     <div className="w-full h-36 rounded-2xl overflow-hidden shrink-0 border border-emerald-500/30 relative mb-4">
                       <img
-                        src={proj.image || 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=800&q=80'}
+                        src={proj.image || '/assets/images/project_architecture.jpg'}
                         alt={proj.title}
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       />
@@ -717,125 +963,6 @@ export const ProjectsScreen: React.FC = () => {
           </div>
         )}
       </div>
-
-      {/* Modal: Ajouter un projet */}
-      {showCreateModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-200">
-          <div className="w-full max-w-lg glass-panel rounded-3xl p-6 border border-emerald-400/50 shadow-2xl relative">
-            <div className="flex items-center justify-between pb-3 border-b border-emerald-500/20">
-              <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                <Folder className="w-5 h-5 text-emerald-400" />
-                Nouveau projet Ketrika
-              </h3>
-              <button
-                onClick={() => setShowCreateModal(false)}
-                className="text-emerald-400/80 hover:text-white"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <form onSubmit={handleCreateProject} className="space-y-4 mt-4">
-              <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-emerald-300 mb-1">
-                  Nom du projet *
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="ex: Application Mobile Ketrika"
-                  value={newTitle}
-                  onChange={(e) => setNewTitle(e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-2xl glass-input text-sm"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-emerald-300 mb-1">
-                  Description
-                </label>
-                <textarea
-                  rows={3}
-                  placeholder="Objectifs et livrables clés..."
-                  value={newDesc}
-                  onChange={(e) => setNewDesc(e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-2xl glass-input text-sm"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-emerald-300 mb-1">
-                    Priorité
-                  </label>
-                  <select
-                    value={newPriority}
-                    onChange={(e) => setNewPriority(e.target.value as any)}
-                    className="w-full px-3 py-2.5 rounded-2xl glass-input text-sm bg-emerald-950 text-white"
-                  >
-                    <option value="Haute">Haute</option>
-                    <option value="Moyenne">Moyenne</option>
-                    <option value="Basse">Basse</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-emerald-300 mb-1">
-                    Catégorie
-                  </label>
-                  <input
-                    type="text"
-                    value={newCategory}
-                    onChange={(e) => setNewCategory(e.target.value)}
-                    className="w-full px-4 py-2.5 rounded-2xl glass-input text-sm"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-emerald-300 mb-1">
-                    Date début
-                  </label>
-                  <input
-                    type="text"
-                    value={newStartDate}
-                    onChange={(e) => setNewStartDate(e.target.value)}
-                    className="w-full px-4 py-2.5 rounded-2xl glass-input text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-emerald-300 mb-1">
-                    Échéance
-                  </label>
-                  <input
-                    type="text"
-                    value={newEndDate}
-                    onChange={(e) => setNewEndDate(e.target.value)}
-                    className="w-full px-4 py-2.5 rounded-2xl glass-input text-sm"
-                  />
-                </div>
-              </div>
-
-              <div className="pt-3 border-t border-emerald-500/20 flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowCreateModal(false)}
-                  className="px-4 py-2 rounded-xl glass-panel-subtle text-emerald-300 text-xs font-bold"
-                >
-                  Annuler
-                </button>
-                <button
-                  type="submit"
-                  className="px-5 py-2 rounded-xl bg-emerald-500 text-slate-950 font-bold text-xs shadow-[0_0_15px_rgba(0,230,118,0.5)]"
-                >
-                  Créer le projet
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
     </div>
   );
 };

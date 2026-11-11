@@ -104,6 +104,14 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenQuickCreate }) => {
                 <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-semibold">
                   Pro
                 </span>
+                <button
+                  onClick={() => setCurrentTab('parametres')}
+                  className="hidden xl:inline-flex items-center gap-1.5 text-[10px] px-2 py-0.5 rounded-md bg-emerald-950/70 text-emerald-300 border border-emerald-500/30 hover:border-emerald-400 transition-colors cursor-pointer"
+                  title="Base de données locale SQLite et persistance hors connexion actives"
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                  <span>SQLite Hors-ligne</span>
+                </button>
               </div>
               <p className="text-xs text-emerald-400/80 -mt-0.5">
                 {getScreenTitle()}

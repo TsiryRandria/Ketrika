@@ -30,6 +30,7 @@ export const FinancesScreen: React.FC = () => {
   const { 
     transactions, 
     addTransaction, 
+    deleteTransaction,
     totalRevenue, 
     totalExpense, 
     currentBalance,
@@ -367,12 +368,25 @@ export const FinancesScreen: React.FC = () => {
                       </div>
                     </div>
 
-                    <div className="text-right">
-                      <span className={`font-extrabold text-sm sm:text-base ${
-                        isPositive ? 'text-emerald-400' : 'text-amber-400'
-                      }`}>
-                        {isPositive ? `+${tx.amount.toLocaleString('fr-FR')} Ar` : `${tx.amount.toLocaleString('fr-FR')} Ar`}
-                      </span>
+                    <div className="flex items-center gap-2">
+                      <div className="text-right">
+                        <span className={`font-extrabold text-sm sm:text-base ${
+                          isPositive ? 'text-emerald-400' : 'text-amber-400'
+                        }`}>
+                          {isPositive ? `+${tx.amount.toLocaleString('fr-FR')} Ar` : `${tx.amount.toLocaleString('fr-FR')} Ar`}
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => {
+                          if (confirm(`Supprimer la transaction "${tx.title}" ?`)) {
+                            deleteTransaction(tx.id);
+                          }
+                        }}
+                        className="p-1.5 text-emerald-400/40 hover:text-rose-400 transition-colors rounded-lg hover:bg-rose-500/10"
+                        title="Supprimer la transaction"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </div>
                 );
