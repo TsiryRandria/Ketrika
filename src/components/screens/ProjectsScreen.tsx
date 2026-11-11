@@ -1,11 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { Project } from '../../types';
 import { 
   Folder, 
   Plus, 
   Search, 
-  SlidersHorizontal, 
   Play, 
   CheckCircle2, 
   Calendar, 
@@ -18,7 +17,9 @@ import {
   Check, 
   Clock, 
   Layers, 
-  Tag
+  Tag,
+  ArrowLeft,
+  Sparkles
 } from 'lucide-react';
 
 export const ProjectsScreen: React.FC = () => {
@@ -27,23 +28,42 @@ export const ProjectsScreen: React.FC = () => {
     addProject, 
     updateProject, 
     deleteProject, 
-    toggleSubTask 
+    toggleSubTask,
+    setIsProjectDetailOpen
   } = useApp();
 
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterTab, setFilterTab] = useState<'Tous' | 'En cours' | 'À faire' | 'Terminés'>('Tous');
+  const [filterTab, setFilterTab] = useState<'Tous' | 'En cours' | 'Terminés'>('Tous');
   
-  // Selected project for detail drawer / inspector
-  const [selectedProject, setSelectedProject] = useState<Project | null>(projects[0] || null);
-  const [showCreateModal, setShowCreateModal] = useState(false);
+  // Selected project for full-page dedicated view
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
 
-  // New Project Form
+  // Sync project detail open state with app context so TopBar is hidden exclusively on detail page
+  useEffect(() => {
+    setIsProjectDetailOpen(Boolean(selectedProjectId));
+    return () => {
+      setIsProjectDetailOpen(false);
+    };
+  }, [selectedProjectId, setIsProjectDetailOpen]);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [newSubTaskText, setNewSubTaskText] = useState('');
+
+  // New Project Form state
   const [newTitle, setNewTitle] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [newPriority, setNewPriority] = useState<'Haute' | 'Moyenne' | 'Basse'>('Haute');
   const [newCategory, setNewCategory] = useState('Développement');
   const [newStartDate, setNewStartDate] = useState('25/04/2025');
   const [newEndDate, setNewEndDate] = useState('15/05/2025');
+
+  // Edit Project Form state
+  const [editTitle, setEditTitle] = useState('');
+  const [editDesc, setEditDesc] = useState('');
+  const [editPriority, setEditPriority] = useState<'Haute' | 'Moyenne' | 'Basse'>('Haute');
+  const [editCategory, setEditCategory] = useState('');
+  const [editStartDate, setEditStartDate] = useState('');
+  const [editEndDate, setEditEndDate] = useState('');
 
   const inProgressCount = projects.filter(p => p.status === 'En cours').length;
   const completedCount = projects.filter(p => p.status === 'Terminé').length;
@@ -56,11 +76,32 @@ export const ProjectsScreen: React.FC = () => {
     if (!matchesSearch) return false;
 
     if (filterTab === 'Tous') return true;
-    if (filterTab === 'En cours') return p.status === 'En cours';
-    if (filterTab === 'À faire') return p.status === 'À faire';
+    if (filterTab === 'En cours') return p.status === 'En cours' || p.status === 'À faire';
     if (filterTab === 'Terminés') return p.status === 'Terminé';
     return true;
   });
+
+  // Currently active project in detail view
+  const activeProject = projects.find(p => p.id === selectedProjectId);
+
+  const getPriorityColor = (priority: 'Haute' | 'Moyenne' | 'Basse') => {
+    switch (priority) {
+      case 'Haute': return 'text-rose-400';
+      case 'Moyenne': return 'text-amber-400';
+      case 'Basse': return 'text-emerald-400';
+    }
+  };
+
+  const getStatusBadge = (status: 'En cours' | 'À faire' | 'Terminé') => {
+    switch (status) {
+      case 'En cours':
+        return 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40';
+      case 'À faire':
+        return 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40';
+      case 'Terminé':
+        return 'bg-emerald-400 text-slate-950 font-bold';
+    }
+  };
 
   const handleCreateProject = (e: React.FormEvent) => {
     e.preventDefault();
@@ -89,34 +130,433 @@ export const ProjectsScreen: React.FC = () => {
     setShowCreateModal(false);
   };
 
-  const getPriorityColor = (priority: 'Haute' | 'Moyenne' | 'Basse') => {
-    switch (priority) {
-      case 'Haute': return 'text-rose-400';
-      case 'Moyenne': return 'text-amber-400';
-      case 'Basse': return 'text-emerald-400';
-    }
+  const openEditModal = (proj: Project) => {
+    setEditTitle(proj.title);
+    setEditDesc(proj.description);
+    setEditPriority(proj.priority);
+    setEditCategory(proj.category);
+    setEditStartDate(proj.startDate);
+    setEditEndDate(proj.endDate);
+    setShowEditModal(true);
   };
 
-  const getStatusBadge = (status: 'En cours' | 'À faire' | 'Terminé') => {
-    switch (status) {
-      case 'En cours':
-        return 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40';
-      case 'À faire':
-        return 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40';
-      case 'Terminé':
-        return 'bg-emerald-400 text-slate-950 font-bold';
-    }
+  const handleSaveEdit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeProject || !editTitle.trim()) return;
+
+    updateProject(activeProject.id, {
+      title: editTitle,
+      description: editDesc,
+      priority: editPriority,
+      category: editCategory,
+      startDate: editStartDate,
+      endDate: editEndDate,
+    });
+    setShowEditModal(false);
   };
 
-  // Sync selected project with updated store state
-  const activeDetailProject = projects.find(p => p.id === selectedProject?.id) || selectedProject;
+  const handleAddSubTask = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeProject || !newSubTaskText.trim()) return;
 
+    const newTask = {
+      id: `sub-${Date.now()}`,
+      text: newSubTaskText.trim(),
+      completed: false,
+    };
+    const updatedTasks = [...activeProject.tasks, newTask];
+    const completedTasksCount = updatedTasks.filter(t => t.completed).length;
+    const progress = Math.round((completedTasksCount / updatedTasks.length) * 100);
+
+    updateProject(activeProject.id, {
+      tasks: updatedTasks,
+      progress,
+    });
+    setNewSubTaskText('');
+  };
+
+  const handleDeleteSubTask = (subTaskId: string) => {
+    if (!activeProject) return;
+    const updatedTasks = activeProject.tasks.filter(t => t.id !== subTaskId);
+    const completedTasksCount = updatedTasks.filter(t => t.completed).length;
+    const progress = updatedTasks.length > 0 
+      ? Math.round((completedTasksCount / updatedTasks.length) * 100) 
+      : 0;
+
+    updateProject(activeProject.id, {
+      tasks: updatedTasks,
+      progress,
+    });
+  };
+
+  // ==========================================
+  // DEDICATED FULL-PAGE PROJECT DETAIL VIEW
+  // ==========================================
+  if (activeProject) {
+    const completedSubCount = activeProject.tasks.filter(t => t.completed).length;
+
+    return (
+      <div className="flex flex-col min-h-[calc(100vh-140px)] max-w-5xl mx-auto w-full pb-24 md:pb-8 animate-in fade-in duration-150 space-y-6">
+        
+        {/* Top Header: Return Button on left + Action controls on right */}
+        <div className="flex items-center justify-between pb-3 border-b border-emerald-500/15">
+          <button
+            type="button"
+            onClick={() => setSelectedProjectId(null)}
+            className="p-2 rounded-xl bg-emerald-950/60 border border-emerald-500/25 text-emerald-300 hover:text-white hover:border-emerald-400/60 transition-all flex items-center justify-center shrink-0 group select-none"
+            title="Retour à la liste des projets"
+            aria-label="Retour à la liste des projets"
+          >
+            <ArrowLeft className="w-5 h-5 group-hover:-translate-x-1 transition-transform text-emerald-400" />
+            <span></span>
+          </button>
+
+          <div className="flex items-center gap-2">
+            {/* Toggle Status (Rouvrir / Terminer) */}
+            <button
+              type="button"
+              onClick={() => {
+                const nextStatus = activeProject.status === 'Terminé' ? 'En cours' : 'Terminé';
+                const nextProgress = activeProject.status === 'Terminé' ? 70 : 100;
+                updateProject(activeProject.id, {
+                  status: nextStatus,
+                  progress: nextProgress
+                });
+              }}
+              className="px-3.5 py-2 rounded-xl glass-panel-subtle text-emerald-200 hover:text-white text-xs font-semibold flex items-center gap-1.5 transition-all"
+            >
+              <Archive className="w-4 h-4 text-emerald-400" />
+              <span>{activeProject.status === 'Terminé' ? 'Rouvrir le projet' : 'Marquer comme terminé'}</span>
+            </button>
+
+            {/* Edit Project */}
+            <button
+              type="button"
+              onClick={() => openEditModal(activeProject)}
+              className="px-3.5 py-2 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/30 text-xs font-semibold flex items-center gap-1.5 transition-all"
+              title="Modifier le projet"
+            >
+              <Edit3 className="w-4 h-4" />
+              <span>Modifier</span>
+            </button>
+
+            {/* Delete Project */}
+            <button
+              type="button"
+              onClick={() => {
+                deleteProject(activeProject.id);
+                setSelectedProjectId(null);
+              }}
+              className="p-2 rounded-xl text-rose-400/80 hover:text-rose-200 hover:bg-rose-500/15 transition-colors"
+              title="Supprimer ce projet"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
+        {/* Project Hero Card */}
+        <div className="glass-panel rounded-3xl p-6 sm:p-8 border border-emerald-500/30 relative overflow-hidden shadow-xl">
+          <div className="flex flex-col md:flex-row gap-6 items-start">
+            
+            {/* Cover Image */}
+            <div className="w-full md:w-56 h-48 sm:h-52 rounded-2xl overflow-hidden shrink-0 border border-emerald-500/30 relative shadow-md">
+              <img
+                src={activeProject.image || 'https://images.unsplash.com/photo-1498050108023-c5249f4df085?auto=format&fit=crop&w=800&q=80'}
+                alt={activeProject.title}
+                className="w-full h-full object-cover"
+              />
+              <span className={`absolute top-3 left-3 text-xs font-bold px-3 py-1 rounded-full border shadow-lg backdrop-blur-md ${getStatusBadge(activeProject.status)}`}>
+                {activeProject.status}
+              </span>
+            </div>
+
+            {/* Project Info */}
+            <div className="flex-1 min-w-0">
+              <div className="flex flex-wrap items-center gap-2 mb-2">
+                <span className="text-xs font-semibold px-2.5 py-0.5 rounded-lg bg-emerald-950/80 border border-emerald-500/30 text-emerald-300">
+                  {activeProject.category}
+                </span>
+                <span className={`text-xs font-bold flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-emerald-950/80 border border-emerald-500/20 ${getPriorityColor(activeProject.priority)}`}>
+                  <Flag className="w-3.5 h-3.5 fill-current" />
+                  Priorité {activeProject.priority}
+                </span>
+              </div>
+
+              <h1 className="text-2xl sm:text-3xl lg:text-4xl font-extrabold text-white tracking-tight leading-tight">
+                {activeProject.title}
+              </h1>
+
+              <p className="text-sm sm:text-base text-emerald-100/80 mt-3 leading-relaxed">
+                {activeProject.description}
+              </p>
+
+              {/* Timeline dates metadata */}
+              <div className="flex flex-wrap items-center gap-4 text-xs sm:text-sm text-emerald-300/80 mt-5 pt-4 border-t border-emerald-500/20">
+                <div className="flex items-center gap-2">
+                  <Calendar className="w-4 h-4 text-emerald-400" />
+                  <span>Début : <strong>{activeProject.startDate}</strong></span>
+                </div>
+                <span className="text-emerald-500/30" aria-hidden="true">•</span>
+                <div className="flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-emerald-400" />
+                  <span>Échéance : <strong>{activeProject.endDate}</strong></span>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        {/* Key Metrics & Progress Strip */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="glass-panel rounded-2xl p-5 border border-emerald-500/25">
+            <span className="text-xs text-emerald-200/70 font-medium">Progression globale</span>
+            <div className="flex items-baseline justify-between mt-1 mb-2">
+              <span className="text-2xl sm:text-3xl font-extrabold text-white">{activeProject.progress}%</span>
+              <span className="text-xs text-emerald-400 font-bold">
+                {completedSubCount} / {activeProject.tasks.length} tâches
+              </span>
+            </div>
+            <div className="w-full bg-emerald-950/80 rounded-full h-2.5 overflow-hidden border border-emerald-500/20">
+              <div
+                className="bg-gradient-to-r from-emerald-400 to-teal-300 h-full rounded-full transition-all duration-300 shadow-[0_0_12px_#10b981]"
+                style={{ width: `${activeProject.progress}%` }}
+              />
+            </div>
+          </div>
+
+          <div className="glass-panel rounded-2xl p-5 border border-emerald-500/25">
+            <span className="text-xs text-emerald-200/70 font-medium">Tâches en attente</span>
+            <div className="flex items-baseline gap-2 mt-1">
+              <span className="text-2xl sm:text-3xl font-extrabold text-white">
+                {activeProject.tasks.length - completedSubCount}
+              </span>
+              <span className="text-xs text-emerald-300/70">restantes</span>
+            </div>
+            <p className="text-xs text-emerald-400/70 mt-2">
+              {completedSubCount === activeProject.tasks.length && activeProject.tasks.length > 0 
+                ? 'Toutes les tâches sont terminées !' 
+                : 'Poursuivez les jalons clés ci-dessous'}
+            </p>
+          </div>
+
+          <div className="glass-panel rounded-2xl p-5 border border-emerald-500/25">
+            <span className="text-xs text-emerald-200/70 font-medium">Statut & Exécution</span>
+            <div className="flex items-baseline gap-2 mt-1">
+              <span className="text-lg sm:text-xl font-bold text-white">{activeProject.status}</span>
+            </div>
+            <p className="text-xs text-emerald-400/70 mt-2">
+              Catégorie : <strong>{activeProject.category}</strong>
+            </p>
+          </div>
+        </div>
+
+        {/* Linked Tasks and Milestones Section */}
+        <div className="glass-panel rounded-3xl p-6 sm:p-7 border border-emerald-500/30 space-y-4">
+          <div className="flex items-center justify-between pb-3 border-b border-emerald-500/20">
+            <h2 className="text-lg font-bold text-white flex items-center gap-2">
+              <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+              <span>Tâches et jalons du projet</span>
+              <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 ml-1">
+                {completedSubCount}/{activeProject.tasks.length}
+              </span>
+            </h2>
+          </div>
+
+          {/* Quick Add SubTask Input */}
+          <form onSubmit={handleAddSubTask} className="flex gap-2">
+            <input
+              type="text"
+              placeholder="Ajouter une tâche ou un jalon à ce projet..."
+              value={newSubTaskText}
+              onChange={(e) => setNewSubTaskText(e.target.value)}
+              className="flex-1 px-4 py-2.5 rounded-2xl glass-input text-sm placeholder:text-emerald-300/40 focus:ring-1 focus:ring-emerald-400"
+            />
+            <button
+              type="submit"
+              disabled={!newSubTaskText.trim()}
+              className="px-4 py-2.5 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-400 text-slate-950 font-bold text-xs hover:shadow-[0_0_18px_rgba(0,230,118,0.5)] transition-all disabled:opacity-40 flex items-center gap-1.5 shrink-0"
+            >
+              <Plus className="w-4 h-4 stroke-[2.5]" />
+              <span>Ajouter</span>
+            </button>
+          </form>
+
+          {/* Subtasks List */}
+          <div className="space-y-2.5 pt-2">
+            {activeProject.tasks.length === 0 ? (
+              <p className="text-sm text-emerald-300/60 py-4 text-center">
+                Aucune tâche associée. Ajoutez votre premier jalon ci-dessus.
+              </p>
+            ) : (
+              activeProject.tasks.map((task) => (
+                <div
+                  key={task.id}
+                  className={`flex items-center justify-between p-3.5 rounded-2xl border transition-all ${
+                    task.completed 
+                      ? 'bg-emerald-950/40 border-emerald-500/20 text-emerald-300/80' 
+                      : 'glass-panel-subtle border-emerald-500/35 text-white hover:border-emerald-400/60'
+                  }`}
+                >
+                  <div
+                    onClick={() => toggleSubTask(activeProject.id, task.id)}
+                    className="flex items-center gap-3.5 flex-1 cursor-pointer select-none"
+                  >
+                    <div className={`w-5 h-5 rounded-lg border flex items-center justify-center transition-all ${
+                      task.completed
+                        ? 'bg-emerald-500 border-emerald-400 text-slate-950 shadow-[0_0_8px_#34d399]'
+                        : 'border-emerald-400/60 bg-emerald-950/60'
+                    }`}>
+                      {task.completed && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                    </div>
+                    <span className={`text-sm font-medium ${task.completed ? 'line-through text-emerald-400/60' : 'text-emerald-50'}`}>
+                      {task.text}
+                    </span>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteSubTask(task.id)}
+                    className="p-1 text-emerald-500/40 hover:text-rose-400 transition-colors ml-2"
+                    title="Supprimer cette tâche"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* Edit Project Modal */}
+        {showEditModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-200">
+            <div className="w-full max-w-lg glass-panel rounded-3xl p-6 border border-emerald-400/50 shadow-2xl relative">
+              <div className="flex items-center justify-between pb-3 border-b border-emerald-500/20">
+                <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                  <Edit3 className="w-5 h-5 text-emerald-400" />
+                  Modifier le projet
+                </h3>
+                <button
+                  onClick={() => setShowEditModal(false)}
+                  className="text-emerald-400/80 hover:text-white"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <form onSubmit={handleSaveEdit} className="space-y-4 mt-4">
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-emerald-300 mb-1">
+                    Nom du projet *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={editTitle}
+                    onChange={(e) => setEditTitle(e.target.value)}
+                    className="w-full px-4 py-2.5 rounded-2xl glass-input text-sm"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-emerald-300 mb-1">
+                    Description
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={editDesc}
+                    onChange={(e) => setEditDesc(e.target.value)}
+                    className="w-full px-4 py-2.5 rounded-2xl glass-input text-sm"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-emerald-300 mb-1">
+                      Priorité
+                    </label>
+                    <select
+                      value={editPriority}
+                      onChange={(e) => setEditPriority(e.target.value as any)}
+                      className="w-full px-3 py-2.5 rounded-2xl glass-input text-sm bg-emerald-950 text-white"
+                    >
+                      <option value="Haute">Haute</option>
+                      <option value="Moyenne">Moyenne</option>
+                      <option value="Basse">Basse</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-emerald-300 mb-1">
+                      Catégorie
+                    </label>
+                    <input
+                      type="text"
+                      value={editCategory}
+                      onChange={(e) => setEditCategory(e.target.value)}
+                      className="w-full px-4 py-2.5 rounded-2xl glass-input text-sm"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-emerald-300 mb-1">
+                      Date début
+                    </label>
+                    <input
+                      type="text"
+                      value={editStartDate}
+                      onChange={(e) => setEditStartDate(e.target.value)}
+                      className="w-full px-4 py-2.5 rounded-2xl glass-input text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-emerald-300 mb-1">
+                      Échéance
+                    </label>
+                    <input
+                      type="text"
+                      value={editEndDate}
+                      onChange={(e) => setEditEndDate(e.target.value)}
+                      className="w-full px-4 py-2.5 rounded-2xl glass-input text-sm"
+                    />
+                  </div>
+                </div>
+
+                <div className="pt-3 border-t border-emerald-500/20 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowEditModal(false)}
+                    className="px-4 py-2 rounded-xl glass-panel-subtle text-emerald-300 text-xs font-bold"
+                  >
+                    Annuler
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-5 py-2 rounded-xl bg-emerald-500 text-slate-950 font-bold text-xs shadow-[0_0_15px_rgba(0,230,118,0.5)]"
+                  >
+                    Enregistrer les modifications
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+      </div>
+    );
+  }
+
+  // ==========================================
+  // MAIN PROJECTS LIST VIEW (GRID)
+  // ==========================================
   return (
     <div className="space-y-4 sm:space-y-6 pb-28 md:pb-8 animate-in fade-in duration-200">
       
-      {/* Search & Filter Bar with Add Project Icon on the left */}
+      {/* Search Bar with Add Project Icon on the left */}
       <div className="flex items-center gap-3">
-        {/* Add project icon button on the left (icon only) */}
         <button
           onClick={() => setShowCreateModal(true)}
           className="p-2.5 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-400 text-slate-950 font-bold hover:shadow-[0_0_18px_rgba(0,230,118,0.5)] transition-all hover:scale-105 flex items-center justify-center shrink-0"
@@ -136,18 +576,11 @@ export const ProjectsScreen: React.FC = () => {
             className="w-full pl-10 pr-4 py-2.5 rounded-2xl glass-input text-sm focus:ring-1 focus:ring-emerald-400 transition-all placeholder:text-emerald-300/40"
           />
         </div>
-
-        <button 
-          className="p-2.5 rounded-2xl glass-panel text-emerald-300 hover:text-white hover:border-emerald-400/50 transition-all"
-          title="Filtres avancés"
-        >
-          <SlidersHorizontal className="w-5 h-5" />
-        </button>
       </div>
 
-      {/* 3. Filter Segmented Tabs */}
+      {/* Filter Segmented Tabs */}
       <div className="flex items-center gap-2 overflow-x-auto no-scrollbar py-1">
-        {(['Tous', 'En cours', 'À faire', 'Terminés'] as const).map((tab) => {
+        {(['Tous', 'En cours', 'Terminés'] as const).map((tab) => {
           const isActive = filterTab === tab;
           return (
             <button
@@ -165,7 +598,7 @@ export const ProjectsScreen: React.FC = () => {
         })}
       </div>
 
-      {/* 4. Stat Summary Counters (Matching page 4) */}
+      {/* Stat Summary Counters */}
       <div className="grid grid-cols-2 gap-3 sm:gap-6">
         <div className="glass-panel rounded-3xl p-4 sm:p-5 border border-emerald-500/30 flex items-center gap-3.5">
           <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-2xl bg-cyan-500/20 border border-cyan-400/40 text-cyan-300 flex items-center justify-center shrink-0">
@@ -194,238 +627,95 @@ export const ProjectsScreen: React.FC = () => {
         </div>
       </div>
 
-      {/* Responsive Grid: Cards List on Left, Detail Inspector on Right on PC/Desktop */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        
-        {/* Project Cards List */}
-        <div className={`${activeDetailProject ? 'lg:col-span-6 xl:col-span-6' : 'lg:col-span-12'} space-y-4`}>
-          {filteredProjects.map((proj) => {
-            const isSelected = activeDetailProject?.id === proj.id;
-            const completedSubCount = proj.tasks.filter(t => t.completed).length;
+      {/* Full-Width Grid of Project Cards */}
+      <div className="space-y-4">
+        {filteredProjects.length === 0 ? (
+          <div className="glass-panel rounded-3xl p-10 text-center border border-emerald-500/20">
+            <Folder className="w-10 h-10 text-emerald-400/50 mx-auto mb-3" />
+            <p className="text-base font-bold text-white">Aucun projet trouvé</p>
+            <p className="text-xs text-emerald-300/70 mt-1">Créez un nouveau projet pour commencer à suivre votre avancement.</p>
+            <button
+              onClick={() => setShowCreateModal(true)}
+              className="mt-4 px-4 py-2 rounded-xl bg-emerald-500 text-slate-950 font-bold text-xs"
+            >
+              Nouveau projet
+            </button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
+            {filteredProjects.map((proj) => {
+              const completedSubCount = proj.tasks.filter(t => t.completed).length;
 
-            return (
-              <div
-                key={proj.id}
-                onClick={() => setSelectedProject(proj)}
-                className={`glass-panel rounded-3xl p-4 sm:p-5 border cursor-pointer transition-all relative group ${
-                  isSelected 
-                    ? 'border-emerald-400 bg-emerald-900/40 shadow-[0_0_25px_rgba(16,185,129,0.3)]' 
-                    : 'border-emerald-500/30 hover:border-emerald-400/60'
-                }`}
-              >
-                <div className="flex items-start gap-4">
-                  {/* Project Image */}
-                  <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-2xl overflow-hidden shrink-0 border border-emerald-500/30 relative">
-                    <img
-                      src={proj.image || 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=800&q=80'}
-                      alt={proj.title}
-                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                    />
-                  </div>
-
-                  {/* Project Summary */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between gap-2">
-                      <h3 className="font-bold text-white text-base sm:text-lg truncate group-hover:text-emerald-300 transition-colors">
-                        {proj.title}
-                      </h3>
-                      <span className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full border ${getStatusBadge(proj.status)}`}>
+              return (
+                <div
+                  key={proj.id}
+                  onClick={() => setSelectedProjectId(proj.id)}
+                  className="glass-panel rounded-3xl p-5 border border-emerald-500/30 hover:border-emerald-400/70 transition-all cursor-pointer relative group hover:shadow-[0_0_30px_rgba(16,185,129,0.25)] flex flex-col justify-between"
+                >
+                  <div>
+                    {/* Project Card Image Banner */}
+                    <div className="w-full h-36 rounded-2xl overflow-hidden shrink-0 border border-emerald-500/30 relative mb-4">
+                      <img
+                        src={proj.image || 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=800&q=80'}
+                        alt={proj.title}
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                      />
+                      <span className={`absolute top-2.5 left-2.5 text-[11px] font-semibold px-2.5 py-0.5 rounded-full border shadow-md backdrop-blur-md ${getStatusBadge(proj.status)}`}>
                         {proj.status}
                       </span>
                     </div>
 
-                    <p className="text-xs text-emerald-200/70 mt-1 line-clamp-2">
+                    {/* Category & Title */}
+                    <div className="flex items-center justify-between gap-2 mb-1.5">
+                      <span className="text-[11px] font-semibold text-emerald-400/90 uppercase tracking-wider">
+                        {proj.category}
+                      </span>
+                      <span className={`flex items-center gap-1 text-[11px] font-bold ${getPriorityColor(proj.priority)}`}>
+                        <Flag className="w-3 h-3 fill-current" /> {proj.priority}
+                      </span>
+                    </div>
+
+                    <h3 className="font-bold text-white text-lg group-hover:text-emerald-300 transition-colors line-clamp-1">
+                      {proj.title}
+                    </h3>
+
+                    <p className="text-xs text-emerald-200/70 mt-1.5 line-clamp-2 leading-relaxed">
                       {proj.description}
                     </p>
+                  </div>
 
-                    {/* Meta: Dates & Priority */}
-                    <div className="flex flex-wrap items-center gap-3 text-[11px] text-emerald-300/80 mt-2.5">
+                  {/* Dates & Progress */}
+                  <div className="mt-4 pt-3 border-t border-emerald-500/20">
+                    <div className="flex items-center justify-between text-[11px] text-emerald-300/80 mb-2">
                       <span className="flex items-center gap-1">
-                        <Calendar className="w-3.5 h-3.5 text-emerald-400" /> {proj.startDate}
+                        <Calendar className="w-3 h-3 text-emerald-400" /> {proj.startDate}
                       </span>
-                      <span>|</span>
                       <span className="flex items-center gap-1">
-                        <Clock className="w-3.5 h-3.5 text-emerald-400" /> {proj.endDate}
-                      </span>
-                      <span>|</span>
-                      <span className={`flex items-center gap-1 font-bold ${getPriorityColor(proj.priority)}`}>
-                        <Flag className="w-3.5 h-3.5 fill-current" /> {proj.priority}
+                        <Clock className="w-3 h-3 text-emerald-400" /> {proj.endDate}
                       </span>
                     </div>
 
-                    {/* Progress Bar & Subtasks counter (Matching page 4) */}
-                    <div className="mt-3">
-                      <div className="w-full bg-emerald-950/80 rounded-full h-2 overflow-hidden border border-emerald-500/20">
-                        <div
-                          className="bg-gradient-to-r from-emerald-400 to-teal-300 h-full rounded-full transition-all duration-300 shadow-[0_0_8px_#34d399]"
-                          style={{ width: `${proj.progress}%` }}
-                        />
-                      </div>
-
-                      <div className="flex items-center justify-between text-xs mt-2 text-emerald-300/80">
-                        <span className="flex items-center gap-1 font-semibold">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                          {completedSubCount}/{proj.tasks.length} tâches
-                        </span>
-                        <span className="font-extrabold text-white">{proj.progress}%</span>
-                      </div>
+                    <div className="w-full bg-emerald-950/80 rounded-full h-2 overflow-hidden border border-emerald-500/20">
+                      <div
+                        className="bg-gradient-to-r from-emerald-400 to-teal-300 h-full rounded-full transition-all duration-300 shadow-[0_0_8px_#34d399]"
+                        style={{ width: `${proj.progress}%` }}
+                      />
                     </div>
 
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Project Detail Drawer / Inspector (Matching bottom panel of page 4) */}
-        {activeDetailProject && (
-          <div className="lg:col-span-6 xl:col-span-6">
-            <div className="glass-panel rounded-3xl p-5 sm:p-6 border border-emerald-400/50 shadow-[0_0_30px_rgba(16,185,129,0.25)] sticky top-20 animate-in fade-in duration-200">
-              
-              {/* Header with Title & Close */}
-              <div className="flex items-start justify-between pb-3 border-b border-emerald-500/20 gap-3">
-                <div className="flex items-center gap-3">
-                  <div className="w-12 h-12 rounded-2xl overflow-hidden shrink-0 border border-emerald-500/30">
-                    <img
-                      src={activeDetailProject.image || 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=800&q=80'}
-                      alt={activeDetailProject.title}
-                      className="w-full h-full object-cover"
-                    />
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-white text-base sm:text-lg">
-                      {activeDetailProject.title}
-                    </h3>
-                    <p className="text-xs text-emerald-200/70 line-clamp-1">
-                      {activeDetailProject.description}
-                    </p>
-                  </div>
-                </div>
-
-                <button
-                  onClick={() => setSelectedProject(null)}
-                  className="p-1 rounded-xl text-emerald-400/80 hover:text-white hover:bg-emerald-900/50 transition-colors"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
-              {/* Status and Deadline Pills */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-4 text-center">
-                <div className="p-2 rounded-xl bg-emerald-950/60 border border-emerald-500/20">
-                  <p className="text-[10px] text-emerald-400/70 font-semibold">Période</p>
-                  <p className="text-xs font-bold text-white mt-0.5">{activeDetailProject.startDate}</p>
-                </div>
-                <div className="p-2 rounded-xl bg-emerald-950/60 border border-emerald-500/20">
-                  <p className="text-[10px] text-emerald-400/70 font-semibold">Échéance</p>
-                  <p className="text-xs font-bold text-white mt-0.5">{activeDetailProject.endDate}</p>
-                </div>
-                <div className="p-2 rounded-xl bg-emerald-950/60 border border-emerald-500/20">
-                  <p className="text-[10px] text-emerald-400/70 font-semibold">Priorité</p>
-                  <p className={`text-xs font-bold mt-0.5 ${getPriorityColor(activeDetailProject.priority)}`}>
-                    {activeDetailProject.priority}
-                  </p>
-                </div>
-                <div className="p-2 rounded-xl bg-emerald-950/60 border border-emerald-500/20">
-                  <p className="text-[10px] text-emerald-400/70 font-semibold">Statut</p>
-                  <p className="text-xs font-bold text-emerald-300 mt-0.5">{activeDetailProject.status}</p>
-                </div>
-              </div>
-
-              {/* Progress Slider */}
-              <div className="mt-4">
-                <div className="flex items-center justify-between text-xs mb-1.5 font-bold">
-                  <span className="text-emerald-300">Progression globale</span>
-                  <span className="text-white text-sm">{activeDetailProject.progress}%</span>
-                </div>
-                <div className="w-full bg-emerald-950/80 rounded-full h-2.5 overflow-hidden border border-emerald-500/20">
-                  <div
-                    className="bg-gradient-to-r from-emerald-400 to-teal-300 h-full rounded-full transition-all duration-300 shadow-[0_0_12px_#10b981]"
-                    style={{ width: `${activeDetailProject.progress}%` }}
-                  />
-                </div>
-              </div>
-
-              {/* Linked Subtasks Checklist (Interactive with instant progress recalculation!) */}
-              <div className="mt-5">
-                <div className="flex items-center justify-between mb-2.5">
-                  <span className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                    Tâches liées ({activeDetailProject.tasks.filter(t => t.completed).length}/{activeDetailProject.tasks.length})
-                  </span>
-                  <span className="text-xs font-medium text-emerald-400">
-                    Catégorie : {activeDetailProject.category}
-                  </span>
-                </div>
-
-                <div className="space-y-2 max-h-52 overflow-y-auto no-scrollbar pr-1">
-                  {activeDetailProject.tasks.map((st) => (
-                    <div
-                      key={st.id}
-                      onClick={() => toggleSubTask(activeDetailProject.id, st.id)}
-                      className={`flex items-center gap-3 p-2.5 rounded-xl border transition-all cursor-pointer ${
-                        st.completed 
-                          ? 'bg-emerald-950/40 border-emerald-500/20 text-emerald-300/80' 
-                          : 'bg-emerald-900/30 border-emerald-500/40 text-white hover:border-emerald-400'
-                      }`}
-                    >
-                      <div className={`w-5 h-5 rounded-lg border flex items-center justify-center transition-all ${
-                        st.completed
-                          ? 'bg-emerald-500 border-emerald-400 text-slate-950 shadow-[0_0_8px_#34d399]'
-                          : 'border-emerald-400/60 bg-emerald-950/60'
-                      }`}>
-                        {st.completed && <Check className="w-3.5 h-3.5 stroke-[3]" />}
-                      </div>
-                      <span className={`text-xs font-medium flex-1 ${st.completed ? 'line-through text-emerald-400/60' : ''}`}>
-                        {st.text}
+                    <div className="flex items-center justify-between text-xs mt-2 text-emerald-300/80">
+                      <span className="flex items-center gap-1 font-semibold">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                        {completedSubCount}/{proj.tasks.length} tâches
                       </span>
+                      <span className="font-extrabold text-white">{proj.progress}%</span>
                     </div>
-                  ))}
+                  </div>
+
                 </div>
-              </div>
-
-              {/* Bottom Actions Row (Modifier, Supprimer, Archiver from page 4) */}
-              <div className="mt-6 pt-4 border-t border-emerald-500/20 flex flex-wrap items-center justify-between gap-3">
-                <button
-                  onClick={() => deleteProject(activeDetailProject.id)}
-                  className="px-4 py-2 rounded-xl bg-rose-500/20 border border-rose-500/30 text-rose-300 hover:bg-rose-500 hover:text-white text-xs font-bold flex items-center gap-1.5 transition-all"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Supprimer</span>
-                </button>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => {
-                      updateProject(activeDetailProject.id, {
-                        status: activeDetailProject.status === 'Terminé' ? 'En cours' : 'Terminé',
-                        progress: activeDetailProject.status === 'Terminé' ? 70 : 100
-                      });
-                    }}
-                    className="px-3.5 py-2 rounded-xl glass-panel-subtle text-emerald-200 hover:text-white text-xs font-semibold flex items-center gap-1.5"
-                  >
-                    <Archive className="w-3.5 h-3.5" />
-                    <span>{activeDetailProject.status === 'Terminé' ? 'Rouvrir' : 'Terminer'}</span>
-                  </button>
-                  <button
-                    onClick={() => {
-                      // Toggle edit mode
-                      const newT = prompt('Modifier le titre du projet :', activeDetailProject.title);
-                      if (newT) updateProject(activeDetailProject.id, { title: newT });
-                    }}
-                    className="px-4 py-2 rounded-xl bg-emerald-500 text-slate-950 font-bold text-xs shadow-[0_0_15px_rgba(0,230,118,0.5)] flex items-center gap-1.5"
-                  >
-                    <Edit3 className="w-3.5 h-3.5" />
-                    <span>Modifier</span>
-                  </button>
-                </div>
-              </div>
-
-            </div>
+              );
+            })}
           </div>
         )}
-
       </div>
 
       {/* Modal: Ajouter un projet */}
@@ -481,7 +771,7 @@ export const ProjectsScreen: React.FC = () => {
                   <select
                     value={newPriority}
                     onChange={(e) => setNewPriority(e.target.value as any)}
-                    className="w-full px-3 py-2.5 rounded-2xl glass-input text-sm bg-emerald-950"
+                    className="w-full px-3 py-2.5 rounded-2xl glass-input text-sm bg-emerald-950 text-white"
                   >
                     <option value="Haute">Haute</option>
                     <option value="Moyenne">Moyenne</option>

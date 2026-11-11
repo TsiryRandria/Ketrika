@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { Note } from '../../types';
 import { 
@@ -22,7 +22,8 @@ import {
   Image as ImageIcon, 
   CheckSquare, 
   Paperclip,
-  Sparkles
+  Sparkles,
+  ArrowLeft
 } from 'lucide-react';
 
 export const NotesScreen: React.FC = () => {
@@ -32,7 +33,8 @@ export const NotesScreen: React.FC = () => {
     updateNote, 
     deleteNote, 
     togglePinNote, 
-    toggleFavoriteNote 
+    toggleFavoriteNote,
+    setIsEditingNote
   } = useApp();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -40,6 +42,14 @@ export const NotesScreen: React.FC = () => {
   // Active editing or creating state
   const [editingNote, setEditingNote] = useState<Note | null>(null);
   const [isCreating, setIsCreating] = useState(false);
+
+  // Synchronize note detail/edit open state with app context
+  useEffect(() => {
+    setIsEditingNote(Boolean(editingNote || isCreating));
+    return () => {
+      setIsEditingNote(false);
+    };
+  }, [editingNote, isCreating, setIsEditingNote]);
 
   // Form fields
   const [title, setTitle] = useState('');
@@ -125,205 +135,237 @@ export const NotesScreen: React.FC = () => {
     'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=600&q=80',
   ];
 
-  // If editing or creating, display the dedicated "Modifier la note" / "Ajouter une note" screen
+  // Textarea reference for inserting formatting at cursor
+  const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+
+  const insertFormatting = (prefix: string, suffix: string, defaultText: string) => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      setContent(prev => prev + `${prefix}${defaultText}${suffix}`);
+      return;
+    }
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const selected = content.substring(start, end) || defaultText;
+    const next = content.substring(0, start) + prefix + selected + suffix + content.substring(end);
+    setContent(next);
+    setTimeout(() => {
+      textarea.focus();
+      textarea.setSelectionRange(start + prefix.length, start + prefix.length + selected.length);
+    }, 0);
+  };
+
+  const insertLinePrefix = (prefix: string) => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      setContent(prev => prev + `\n${prefix}`);
+      return;
+    }
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const before = content.substring(0, start);
+    const after = content.substring(end);
+    const needsBreak = before.length > 0 && !before.endsWith('\n');
+    const inserted = `${needsBreak ? '\n' : ''}${prefix}`;
+    setContent(before + inserted + after);
+    setTimeout(() => {
+      textarea.focus();
+      const pos = start + inserted.length;
+      textarea.setSelectionRange(pos, pos);
+    }, 0);
+  };
+
+  // If editing or creating, display the dedicated minimalist borderless screen
   if (editingNote || isCreating) {
     return (
-      <div className="space-y-4 sm:space-y-6 pb-28 md:pb-8 animate-in fade-in duration-200 max-w-4xl mx-auto">
-        <div className="glass-panel rounded-3xl p-5 sm:p-7 border border-emerald-400/50 shadow-[0_0_35px_rgba(16,185,129,0.3)]">
-          
-          {/* Header with Title & Close (Matching page 3: Modifier la note) */}
-          <div className="flex items-center justify-between pb-4 border-b border-emerald-500/20">
-            <div className="flex items-center gap-2.5">
-              <div className="p-2 rounded-xl bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                <Edit3 className="w-5 h-5 text-emerald-400" />
-              </div>
-              <h2 className="font-extrabold text-white text-lg sm:text-xl tracking-tight">
-                {isCreating ? 'Ajouter une note' : 'Modifier la note'}
-              </h2>
-            </div>
-            
+      <div className="flex flex-col min-h-[calc(100vh-120px)] max-w-4xl mx-auto w-full pb-24 md:pb-8 animate-in fade-in duration-150">
+        
+        {/* Sleek Action Header: Return on left, actions on right */}
+        <div className="flex items-center justify-between pb-3 mb-2 border-b border-emerald-500/15">
+          <button
+            type="button"
+            onClick={cancelEditor}
+            className="inline-flex items-center gap-2 text-emerald-300 hover:text-white transition-colors py-1.5 group select-none"
+            title="Retour à la liste des notes"
+          >
+            <ArrowLeft className="w-5 h-5 group-hover:-translate-x-1 transition-transform text-emerald-400" />
+            <span className="text-sm font-semibold tracking-wide">Retour</span>
+          </button>
+
+          <div className="flex items-center gap-2">
+            {/* Quick Pin Toggle */}
             <button
-              onClick={cancelEditor}
-              className="p-2 rounded-full bg-emerald-950/70 border border-emerald-500/30 text-emerald-300 hover:text-white hover:bg-emerald-900/60 transition-all"
-              title="Retour à la liste des notes"
+              type="button"
+              onClick={() => setIsPinned(!isPinned)}
+              className={`p-2 rounded-xl transition-all ${
+                isPinned 
+                  ? 'text-emerald-300 bg-emerald-500/20 border border-emerald-400/40 shadow-sm' 
+                  : 'text-emerald-400/60 hover:text-emerald-200 hover:bg-emerald-950/50'
+              }`}
+              title={isPinned ? 'Détacher' : 'Épingler la note'}
             >
-              <X className="w-5 h-5" />
-            </button>
-          </div>
-
-          {/* Title Input */}
-          <div className="mt-5">
-            <label className="block text-xs font-bold uppercase tracking-wider text-emerald-300/80 mb-1.5">
-              Titre de la note
-            </label>
-            <input
-              type="text"
-              placeholder="ex: Voyage au Maroc"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              className="w-full px-4 py-3 rounded-2xl glass-input text-base sm:text-lg font-bold placeholder:text-emerald-300/40 focus:ring-1 focus:ring-emerald-400"
-            />
-          </div>
-
-          {/* Rich Text Toolbar (Matching B, I, U, Lists, Image, Checklist, Link from page 3) */}
-          <div className="mt-4 flex items-center gap-1.5 p-1.5 rounded-2xl bg-emerald-950/80 border border-emerald-500/25 overflow-x-auto no-scrollbar">
-            <button 
-              type="button" 
-              onClick={() => setContent(prev => prev + ' **gras**')}
-              className="p-2 rounded-xl text-emerald-300 hover:text-white hover:bg-emerald-800/40 transition-colors"
-              title="Gras"
-            >
-              <Bold className="w-4 h-4" />
-            </button>
-            <button 
-              type="button" 
-              onClick={() => setContent(prev => prev + ' *italique*')}
-              className="p-2 rounded-xl text-emerald-300 hover:text-white hover:bg-emerald-800/40 transition-colors"
-              title="Italique"
-            >
-              <Italic className="w-4 h-4" />
-            </button>
-            <button 
-              type="button" 
-              onClick={() => setContent(prev => prev + ' <u>souligné</u>')}
-              className="p-2 rounded-xl text-emerald-300 hover:text-white hover:bg-emerald-800/40 transition-colors"
-              title="Souligné"
-            >
-              <Underline className="w-4 h-4" />
+              <Pin className={`w-4 h-4 ${isPinned ? 'fill-current' : ''}`} />
             </button>
 
-            <div className="w-[1px] h-5 bg-emerald-500/30 mx-1" />
-
-            <button 
-              type="button" 
-              onClick={() => setContent(prev => prev + '\n• ')}
-              className="p-2 rounded-xl text-emerald-300 hover:text-white hover:bg-emerald-800/40 transition-colors"
-              title="Liste à puces"
+            {/* Quick Favorite Toggle */}
+            <button
+              type="button"
+              onClick={() => setIsFavorite(!isFavorite)}
+              className={`p-2 rounded-xl transition-all ${
+                isFavorite 
+                  ? 'text-amber-300 bg-amber-400/15 border border-amber-400/40' 
+                  : 'text-emerald-400/60 hover:text-amber-300 hover:bg-emerald-950/50'
+              }`}
+              title={isFavorite ? 'Retirer des favoris' : 'Marquer comme favori'}
             >
-              <List className="w-4 h-4" />
-            </button>
-            <button 
-              type="button" 
-              onClick={() => setContent(prev => prev + '\n1. ')}
-              className="p-2 rounded-xl text-emerald-300 hover:text-white hover:bg-emerald-800/40 transition-colors"
-              title="Liste numérotée"
-            >
-              <ListOrdered className="w-4 h-4" />
+              <Star className={`w-4 h-4 ${isFavorite ? 'fill-current' : ''}`} />
             </button>
 
-            <div className="w-[1px] h-5 bg-emerald-500/30 mx-1" />
-
-            <button 
-              type="button" 
-              onClick={() => setImageUrl(sampleImages[0])}
-              className="p-2 rounded-xl text-emerald-300 hover:text-white hover:bg-emerald-800/40 transition-colors"
-              title="Insérer une image"
-            >
-              <ImageIcon className="w-4 h-4" />
-            </button>
-            <button 
-              type="button" 
-              onClick={() => setContent(prev => prev + '\n[ ] ')}
-              className="p-2 rounded-xl text-emerald-300 hover:text-white hover:bg-emerald-800/40 transition-colors"
-              title="Ajouter une case à cocher"
-            >
-              <CheckSquare className="w-4 h-4" />
-            </button>
-            <button 
-              type="button" 
-              onClick={() => setContent(prev => prev + ' [Lien](https://ketrika.mg)')}
-              className="p-2 rounded-xl text-emerald-300 hover:text-white hover:bg-emerald-800/40 transition-colors"
-              title="Pièce jointe"
-            >
-              <Paperclip className="w-4 h-4" />
-            </button>
-          </div>
-
-          {/* Textarea Content & Image preview side-by-side if image present */}
-          <div className="mt-4 flex flex-col md:flex-row gap-4">
-            <div className="flex-1">
-              <label className="block text-xs font-bold uppercase tracking-wider text-emerald-300/80 mb-1.5">
-                Contenu de la note
-              </label>
-              <textarea
-                rows={8}
-                placeholder="Liste des lieux à visiter :&#10;• Marrakech&#10;• Fès&#10;• Chefchaouen"
-                value={content}
-                onChange={(e) => setContent(e.target.value)}
-                className="w-full px-4 py-3.5 rounded-2xl glass-input text-sm focus:ring-1 focus:ring-emerald-400 placeholder:text-emerald-300/40 leading-relaxed font-sans"
-              />
-            </div>
-
-            {/* Attached Photo Preview (Matching page 3 right thumbnail) */}
-            {imageUrl && (
-              <div className="md:w-56 shrink-0 flex flex-col">
-                <label className="block text-xs font-bold uppercase tracking-wider text-emerald-300/80 mb-1.5">
-                  Photo jointe
-                </label>
-                <div className="relative rounded-2xl overflow-hidden border border-emerald-400/40 shadow-lg h-44 w-full">
-                  <img src={imageUrl} alt="Pièce jointe" className="w-full h-full object-cover" />
-                  <button
-                    onClick={() => setImageUrl(undefined)}
-                    className="absolute top-2 right-2 p-1.5 rounded-full bg-slate-950/80 text-white hover:bg-rose-500 transition-colors shadow-md"
-                    title="Supprimer la photo"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
+            {/* Delete button (if modifying an existing note) */}
+            {editingNote && (
+              <button
+                type="button"
+                onClick={() => handleDelete(editingNote.id)}
+                className="p-2 rounded-xl text-rose-400/70 hover:text-rose-200 hover:bg-rose-500/15 transition-colors"
+                title="Supprimer la note"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
             )}
+
+            {/* Primary Save Button */}
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={!title.trim()}
+              className="ml-1.5 px-4 sm:px-5 py-2 rounded-xl bg-emerald-400 hover:bg-emerald-300 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 font-bold text-xs sm:text-sm shadow-[0_0_20px_rgba(52,211,153,0.4)] hover:shadow-[0_0_28px_rgba(52,211,153,0.65)] hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center gap-1.5"
+            >
+              <Check className="w-4 h-4 stroke-[3]" />
+              <span>Enregistrer</span>
+            </button>
           </div>
-
-          {/* Action Buttons Row (Matching page 3: Épingler, Archiver, Supprimer, Enregistrer) */}
-          <div className="mt-6 pt-4 border-t border-emerald-500/20 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setIsPinned(!isPinned)}
-                className={`px-3.5 py-2.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all ${
-                  isPinned 
-                    ? 'bg-emerald-500/30 text-emerald-200 border border-emerald-400' 
-                    : 'glass-panel-subtle text-emerald-300/70 hover:text-white'
-                }`}
-              >
-                <Pin className={`w-4 h-4 ${isPinned ? 'fill-current' : ''}`} />
-                <span>Épingler</span>
-              </button>
-              
-              <button
-                type="button"
-                onClick={cancelEditor}
-                className="px-3.5 py-2.5 rounded-xl glass-panel-subtle text-emerald-300/70 hover:text-white text-xs font-semibold flex items-center gap-1.5"
-              >
-                <Archive className="w-4 h-4" />
-                <span>Archiver</span>
-              </button>
-            </div>
-
-            <div className="flex items-center gap-2.5">
-              {editingNote && (
-                <button
-                  type="button"
-                  onClick={() => handleDelete(editingNote.id)}
-                  className="px-4 py-2.5 rounded-xl bg-rose-500/20 border border-rose-500/30 text-rose-300 hover:bg-rose-500 hover:text-white text-xs font-semibold flex items-center gap-1.5 transition-all"
-                >
-                  <Trash2 className="w-4 h-4" />
-                  <span>Supprimer</span>
-                </button>
-              )}
-              
-              <button
-                type="button"
-                onClick={handleSave}
-                className="px-6 py-2.5 rounded-xl bg-emerald-500 text-slate-950 font-bold text-xs shadow-[0_0_18px_rgba(0,230,118,0.6)] hover:shadow-[0_0_28px_rgba(0,230,118,0.9)] transition-all flex items-center gap-2"
-              >
-                <Check className="w-4 h-4 stroke-[3]" />
-                <span>Enregistrer</span>
-              </button>
-            </div>
-          </div>
-
         </div>
+
+        {/* Minimalist Formatting Toolbar */}
+        <div className="flex items-center gap-1 py-1.5 mb-2 text-emerald-300/70 overflow-x-auto no-scrollbar">
+          <button 
+            type="button" 
+            onClick={() => insertFormatting('**', '**', 'texte en gras')}
+            className="p-1.5 rounded-lg hover:text-white hover:bg-emerald-500/15 transition-colors"
+            title="Gras"
+          >
+            <Bold className="w-4 h-4" />
+          </button>
+          <button 
+            type="button" 
+            onClick={() => insertFormatting('*', '*', 'texte en italique')}
+            className="p-1.5 rounded-lg hover:text-white hover:bg-emerald-500/15 transition-colors"
+            title="Italique"
+          >
+            <Italic className="w-4 h-4" />
+          </button>
+          <button 
+            type="button" 
+            onClick={() => insertFormatting('<u>', '</u>', 'texte souligné')}
+            className="p-1.5 rounded-lg hover:text-white hover:bg-emerald-500/15 transition-colors"
+            title="Souligné"
+          >
+            <Underline className="w-4 h-4" />
+          </button>
+
+          <span className="w-[1px] h-4 bg-emerald-500/20 mx-1 shrink-0" aria-hidden="true" />
+
+          <button 
+            type="button" 
+            onClick={() => insertLinePrefix('• ')}
+            className="p-1.5 rounded-lg hover:text-white hover:bg-emerald-500/15 transition-colors"
+            title="Liste à puces"
+          >
+            <List className="w-4 h-4" />
+          </button>
+          <button 
+            type="button" 
+            onClick={() => insertLinePrefix('1. ')}
+            className="p-1.5 rounded-lg hover:text-white hover:bg-emerald-500/15 transition-colors"
+            title="Liste numérotée"
+          >
+            <ListOrdered className="w-4 h-4" />
+          </button>
+          <button 
+            type="button" 
+            onClick={() => insertLinePrefix('[ ] ')}
+            className="p-1.5 rounded-lg hover:text-white hover:bg-emerald-500/15 transition-colors"
+            title="Case à cocher"
+          >
+            <CheckSquare className="w-4 h-4" />
+          </button>
+
+          <span className="w-[1px] h-4 bg-emerald-500/20 mx-1 shrink-0" aria-hidden="true" />
+
+          <button 
+            type="button" 
+            onClick={() => setImageUrl(imageUrl ? undefined : sampleImages[0])}
+            className={`p-1.5 rounded-lg transition-colors ${imageUrl ? 'text-emerald-300 bg-emerald-500/20' : 'hover:text-white hover:bg-emerald-500/15'}`}
+            title={imageUrl ? "Supprimer la photo" : "Ajouter une image"}
+          >
+            <ImageIcon className="w-4 h-4" />
+          </button>
+          <button 
+            type="button" 
+            onClick={() => insertFormatting('[', '](https://...)', 'titre du lien')}
+            className="p-1.5 rounded-lg hover:text-white hover:bg-emerald-500/15 transition-colors"
+            title="Ajouter un lien"
+          >
+            <Paperclip className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Frameless Note Title Input */}
+        <input
+          type="text"
+          placeholder="Titre de la note"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          className="w-full bg-transparent border-0 outline-none text-2xl sm:text-3xl md:text-4xl font-extrabold text-white placeholder:text-emerald-300/30 py-2 tracking-tight focus:ring-0"
+          autoFocus
+        />
+
+        {/* Quiet unboxed metadata if editing */}
+        {editingNote && (
+          <div className="flex items-center gap-2 text-xs text-emerald-400/50 py-1 select-none">
+            <span>Créée le {editingNote.createdAt}</span>
+            <span aria-hidden="true">·</span>
+            <span>Modifiée le {editingNote.updatedAt}</span>
+          </div>
+        )}
+
+        {/* Full-width, Frameless Writing Area */}
+        <div className="flex-1 flex flex-col mt-3">
+          <textarea
+            ref={textareaRef}
+            rows={14}
+            placeholder="Écrivez librement vos pensées, idées ou projets..."
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            className="w-full flex-1 min-h-[50vh] bg-transparent border-0 outline-none text-base sm:text-lg text-emerald-100 placeholder:text-emerald-300/30 resize-none leading-relaxed focus:ring-0 py-2 font-sans"
+          />
+
+          {/* Attached Image preview directly beneath content without constraining editor */}
+          {imageUrl && (
+            <div className="mt-4 mb-2 relative group max-w-sm rounded-2xl overflow-hidden border border-emerald-500/25 shadow-lg">
+              <img src={imageUrl} alt="Pièce jointe" className="w-full max-h-60 object-cover" />
+              <button
+                type="button"
+                onClick={() => setImageUrl(undefined)}
+                className="absolute top-2.5 right-2.5 p-1.5 rounded-full bg-slate-950/80 text-white/90 hover:text-white hover:bg-rose-500 transition-colors backdrop-blur-sm shadow"
+                title="Supprimer la photo"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+        </div>
+
       </div>
     );
   }

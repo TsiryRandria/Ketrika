@@ -48,8 +48,8 @@ export const FinancesScreen: React.FC = () => {
   const [txSource, setTxSource] = useState('Carte bancaire');
 
   // Budget
-  const [monthlyBudget, setMonthlyBudget] = useState({ spent: 1500, max: 2000 });
-  const [savingsGoal, setSavingsGoal] = useState({ current: 2000, target: 5000 });
+  const [monthlyBudget, setMonthlyBudget] = useState({ spent: 1500000, max: 2000000 });
+  const [savingsGoal, setSavingsGoal] = useState({ current: 2000000, target: 5000000 });
 
   const filteredTransactions = transactions.filter(t => {
     if (txFilter === 'Revenus') return t.type === 'Revenu' || t.amount > 0;
@@ -91,22 +91,10 @@ export const FinancesScreen: React.FC = () => {
   return (
     <div className="space-y-4 sm:space-y-6 pb-28 md:pb-8 animate-in fade-in duration-200">
       
-      {/* 1. Header with Period Selectors (Matching page 8) */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 rounded-2xl bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-            <Wallet className="w-6 h-6 stroke-[2.2]" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-extrabold text-white tracking-tight">Finances</h1>
-            <p className="text-xs text-emerald-300/70">
-              Gérez vos finances et vos investissements intelligemment.
-            </p>
-          </div>
-        </div>
-
+      {/* 1. Period Selectors Header */}
+      <div className="flex items-center justify-end">
         {/* Period Segmented Pills: Jour, Semaine, Mois, Année */}
-        <div className="flex items-center p-1 rounded-2xl bg-emerald-950/70 border border-emerald-500/25 self-start sm:self-auto">
+        <div className="flex items-center p-1 rounded-2xl bg-emerald-950/70 border border-emerald-500/25">
           {(['Jour', 'Semaine', 'Mois', 'Année'] as const).map((p) => (
             <button
               key={p}
@@ -137,11 +125,8 @@ export const FinancesScreen: React.FC = () => {
               <div className="flex items-baseline gap-3 mt-1">
                 <span className="text-3xl sm:text-4xl font-black text-white tracking-tight">
                   {balanceVisible 
-                    ? `${currentBalance.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} €` 
-                    : '•••••••• €'}
-                </span>
-                <span className="text-xs font-extrabold text-emerald-300 flex items-center gap-1 bg-emerald-500/20 px-2 py-0.5 rounded-full border border-emerald-500/30">
-                  <TrendingUp className="w-3.5 h-3.5" /> +12.5%
+                    ? `${currentBalance.toLocaleString('fr-FR')} Ar` 
+                    : '•••••••• Ar'}
                 </span>
               </div>
             </div>
@@ -168,7 +153,7 @@ export const FinancesScreen: React.FC = () => {
             <p className="text-xs text-emerald-200/70 font-medium">Total des revenus</p>
             <div className="flex items-baseline gap-1.5 mt-0.5">
               <span className="text-lg sm:text-xl font-extrabold text-white">
-                {balanceVisible ? `${totalRevenue.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} €` : '•••• €'}
+                {balanceVisible ? `${totalRevenue.toLocaleString('fr-FR')} Ar` : '•••• Ar'}
               </span>
               <span className="text-[10px] text-emerald-400 font-bold">↑ +8.3%</span>
             </div>
@@ -184,7 +169,7 @@ export const FinancesScreen: React.FC = () => {
             <p className="text-xs text-emerald-200/70 font-medium">Total des dépenses</p>
             <div className="flex items-baseline gap-1.5 mt-0.5">
               <span className="text-lg sm:text-xl font-extrabold text-white">
-                {balanceVisible ? `${totalExpense.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} €` : '•••• €'}
+                {balanceVisible ? `${totalExpense.toLocaleString('fr-FR')} Ar` : '•••• Ar'}
               </span>
               <span className="text-[10px] text-rose-400 font-bold">↑ +2.1%</span>
             </div>
@@ -200,7 +185,7 @@ export const FinancesScreen: React.FC = () => {
             <p className="text-xs text-emerald-200/70 font-medium">Solde disponible</p>
             <div className="flex items-baseline gap-1.5 mt-0.5">
               <span className="text-lg sm:text-xl font-extrabold text-white">
-                {balanceVisible ? `${currentBalance.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} €` : '•••• €'}
+                {balanceVisible ? `${currentBalance.toLocaleString('fr-FR')} Ar` : '•••• Ar'}
               </span>
             </div>
           </div>
@@ -253,11 +238,11 @@ export const FinancesScreen: React.FC = () => {
                 ))}
 
                 {/* Y Axis Labels */}
-                <text x="5" y="15" fill="rgba(52, 211, 153, 0.7)" fontSize="10">4k €</text>
-                <text x="5" y="65" fill="rgba(52, 211, 153, 0.7)" fontSize="10">3k €</text>
-                <text x="5" y="115" fill="rgba(52, 211, 153, 0.7)" fontSize="10">2k €</text>
-                <text x="5" y="165" fill="rgba(52, 211, 153, 0.7)" fontSize="10">1k €</text>
-                <text x="5" y="195" fill="rgba(52, 211, 153, 0.7)" fontSize="10">0 €</text>
+                <text x="5" y="15" fill="rgba(52, 211, 153, 0.7)" fontSize="10">4M Ar</text>
+                <text x="5" y="65" fill="rgba(52, 211, 153, 0.7)" fontSize="10">3M Ar</text>
+                <text x="5" y="115" fill="rgba(52, 211, 153, 0.7)" fontSize="10">2M Ar</text>
+                <text x="5" y="165" fill="rgba(52, 211, 153, 0.7)" fontSize="10">1M Ar</text>
+                <text x="5" y="195" fill="rgba(52, 211, 153, 0.7)" fontSize="10">0 Ar</text>
 
                 {/* Revenue Line (Green, points: Jan 120, Fév 45, Mar 75, Avr 60, Mai 30) */}
                 <path
@@ -386,7 +371,7 @@ export const FinancesScreen: React.FC = () => {
                       <span className={`font-extrabold text-sm sm:text-base ${
                         isPositive ? 'text-emerald-400' : 'text-amber-400'
                       }`}>
-                        {isPositive ? `+${tx.amount.toFixed(2)} €` : `${tx.amount.toFixed(2)} €`}
+                        {isPositive ? `+${tx.amount.toLocaleString('fr-FR')} Ar` : `${tx.amount.toLocaleString('fr-FR')} Ar`}
                       </span>
                     </div>
                   </div>
@@ -479,7 +464,6 @@ export const FinancesScreen: React.FC = () => {
                 Objectifs d'épargne
               </span>
               <button 
-                onClick={() => alert(`Objectif Epargne : ${savingsGoal.current} € épargnés sur ${savingsGoal.target} € visés.`)}
                 className="text-xs text-emerald-400 font-bold hover:underline"
               >
                 Voir les détails →
@@ -493,9 +477,9 @@ export const FinancesScreen: React.FC = () => {
               <div className="flex-1">
                 <div className="flex items-baseline justify-between">
                   <span className="text-xl font-extrabold text-white">
-                    {savingsGoal.current.toLocaleString('fr-FR')} €
+                    {savingsGoal.current.toLocaleString('fr-FR')} Ar
                   </span>
-                  <span className="text-xs text-emerald-300/80">/ {savingsGoal.target.toLocaleString('fr-FR')} €</span>
+                  <span className="text-xs text-emerald-300/80">/ {savingsGoal.target.toLocaleString('fr-FR')} Ar</span>
                 </div>
                 {/* Progress bar */}
                 <div className="w-full bg-emerald-950/80 rounded-full h-2 mt-2 overflow-hidden border border-emerald-500/20">
@@ -527,7 +511,7 @@ export const FinancesScreen: React.FC = () => {
                   <Edit3 className="w-3 h-3" /> Modifier
                 </button>
                 <button 
-                  onClick={() => setMonthlyBudget({ spent: 0, max: 2000 })}
+                  onClick={() => setMonthlyBudget({ spent: 0, max: 2000000 })}
                   className="px-2.5 py-1 rounded-lg bg-rose-500/20 text-rose-300 border border-rose-500/30 text-xs font-bold hover:bg-rose-500 hover:text-white flex items-center gap-1"
                 >
                   <Trash2 className="w-3 h-3" /> Supprimer
@@ -538,7 +522,7 @@ export const FinancesScreen: React.FC = () => {
             <div className="my-2">
               <div className="flex items-baseline justify-between text-xs">
                 <span className="text-base font-extrabold text-white">
-                  {monthlyBudget.spent.toLocaleString('fr-FR')} € / {monthlyBudget.max.toLocaleString('fr-FR')} €
+                  {monthlyBudget.spent.toLocaleString('fr-FR')} Ar / {monthlyBudget.max.toLocaleString('fr-FR')} Ar
                 </span>
                 <span className="font-extrabold text-emerald-300">75%</span>
               </div>
@@ -589,13 +573,13 @@ export const FinancesScreen: React.FC = () => {
 
               <div>
                 <label className="block text-xs font-bold uppercase tracking-wider text-emerald-300 mb-1">
-                  Montant en Euros (€) *
+                  Montant en Ariary (Ar) *
                 </label>
                 <input
                   type="number"
-                  step="0.01"
+                  step="100"
                   required
-                  placeholder="ex: 150.00"
+                  placeholder="ex: 150000"
                   value={txAmount}
                   onChange={(e) => setTxAmount(e.target.value)}
                   className="w-full px-4 py-2.5 rounded-2xl glass-input text-sm font-bold"

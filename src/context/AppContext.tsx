@@ -35,6 +35,8 @@ interface AppContextType {
   
   // Projects
   projects: Project[];
+  isProjectDetailOpen: boolean;
+  setIsProjectDetailOpen: (val: boolean) => void;
   addProject: (proj: Omit<Project, 'id'>) => void;
   updateProject: (id: string, updates: Partial<Project>) => void;
   deleteProject: (id: string) => void;
@@ -48,6 +50,8 @@ interface AppContextType {
   
   // Notes
   notes: Note[];
+  isEditingNote: boolean;
+  setIsEditingNote: (val: boolean) => void;
   addNote: (note: Omit<Note, 'id' | 'createdAt' | 'updatedAt'>) => void;
   updateNote: (id: string, updates: Partial<Note>) => void;
   deleteNote: (id: string) => void;
@@ -56,6 +60,8 @@ interface AppContextType {
   
   // Jobs
   jobs: Job[];
+  isJobDetailOpen: boolean;
+  setIsJobDetailOpen: (val: boolean) => void;
   toggleFavoriteJob: (id: string) => void;
   applyToJob: (id: string) => void;
   
@@ -105,6 +111,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_projects`);
     return saved ? JSON.parse(saved) : initialProjects;
   });
+  const [isProjectDetailOpen, setIsProjectDetailOpen] = useState<boolean>(false);
 
   const [tasks, setTasks] = useState<Task[]>(() => {
     const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_tasks`);
@@ -115,15 +122,29 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_notes`);
     return saved ? JSON.parse(saved) : initialNotes;
   });
+  const [isEditingNote, setIsEditingNote] = useState<boolean>(false);
 
   const [jobs, setJobs] = useState<Job[]>(() => {
     const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_jobs`);
     return saved ? JSON.parse(saved) : initialJobs;
   });
+  const [isJobDetailOpen, setIsJobDetailOpen] = useState<boolean>(false);
 
   const [transactions, setTransactions] = useState<Transaction[]>(() => {
     const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_transactions`);
-    return saved ? JSON.parse(saved) : initialTransactions;
+    if (saved) {
+      try {
+        const parsed: Transaction[] = JSON.parse(saved);
+        // Automatically migrate to new Ariary denominations if stored data had old Euro values
+        if (parsed.length > 0 && Math.abs(parsed[0].amount) < 10000) {
+          return initialTransactions;
+        }
+        return parsed;
+      } catch {
+        return initialTransactions;
+      }
+    }
+    return initialTransactions;
   });
 
   const [notifications, setNotifications] = useState<NotificationItem[]>(() => {
@@ -310,7 +331,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setTransactions(prev => [newTx, ...prev]);
     addNotificationItem({
       title: tx.type === 'Revenu' ? 'Revenu enregistré' : 'Dépense enregistrée',
-      description: `${tx.title} : ${tx.amount > 0 ? '+' : ''}${tx.amount.toFixed(2)} €`,
+      description: `${tx.title} : ${tx.amount > 0 ? '+' : ''}${tx.amount.toLocaleString('fr-FR')} Ar`,
       category: 'finance',
       time: "À l'instant",
     });
@@ -392,7 +413,7 @@ Tu es Ketrika IA, l'assistant intelligent intégré dans l'application de produc
 Tu assistes ${profile.name} (${profile.email}, basée à ${profile.address}).
 L'utilisateur a actuellement ${projects.length} projets (dont "${projects[0]?.title || 'Ketrika'}" à ${projects[0]?.progress || 70}%).
 Il a ${tasks.length} tâches dont ${tasks.filter(t => !t.completed).length} en attente.
-Son solde financier actuel est de ${currentBalance.toFixed(2)} €.
+Son solde financier actuel est de ${currentBalance.toLocaleString('fr-FR')} Ar.
 Réponds toujours en français, de façon élégante, concise, proactive, bienveillante et orientée productivité.
         `;
 
@@ -415,7 +436,7 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
           const pending = tasks.filter(t => !t.completed);
           replyText = `Vous avez actuellement **${pending.length} tâches** en attente. Ma recommandation pour aujourd'hui :\n1. **${pending[0]?.title || 'Tâche prioritaire'}** (priorité ${pending[0]?.priority || 'Haute'})\n2. Consacrez 45 minutes en mode focus sans distraction pour la finaliser !\nVoulez-vous que j'ajoute un rappel ?`;
         } else if (lower.includes('finance') || lower.includes('budget') || lower.includes('argent') || lower.includes('solde')) {
-          replyText = `Votre solde actuel est de **${currentBalance.toFixed(2)} €** (+12.5% ce mois-ci). Vos revenus s'élèvent à ${totalRevenue.toFixed(2)} € contre ${totalExpense.toFixed(2)} € de dépenses. Vous êtes bien parti pour atteindre votre objectif d'épargne !`;
+          replyText = `Votre solde actuel est de **${currentBalance.toLocaleString('fr-FR')} Ar**. Vos revenus s'élèvent à ${totalRevenue.toLocaleString('fr-FR')} Ar contre ${totalExpense.toLocaleString('fr-FR')} Ar de dépenses. Vous êtes bien parti pour atteindre votre objectif d'épargne !`;
         } else if (lower.includes('bonjour') || lower.includes('salut') || lower.includes('coucou')) {
           replyText = `Bonjour ${profile.name} ! Ravi de vous retrouver sur Ketrika. Tout est synchronisé. De quoi souhaitez-vous vous occuper aujourd'hui : vos projets, vos tâches ou votre bilan financier ?`;
         } else {
@@ -492,6 +513,8 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
       balanceVisible,
       setBalanceVisible,
       projects,
+      isProjectDetailOpen,
+      setIsProjectDetailOpen,
       addProject,
       updateProject,
       deleteProject,
@@ -501,12 +524,16 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
       toggleTask,
       deleteTask,
       notes,
+      isEditingNote,
+      setIsEditingNote,
       addNote,
       updateNote,
       deleteNote,
       togglePinNote,
       toggleFavoriteNote,
       jobs,
+      isJobDetailOpen,
+      setIsJobDetailOpen,
       toggleFavoriteJob,
       applyToJob,
       transactions,

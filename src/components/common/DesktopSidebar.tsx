@@ -14,7 +14,8 @@ import {
   Crown,
   ChevronRight,
   ShieldCheck,
-  TrendingUp
+  TrendingUp,
+  BarChart3
 } from 'lucide-react';
 import { NavigationTab } from '../../types';
 
@@ -57,6 +58,13 @@ export const DesktopSidebar: React.FC = () => {
 
   const toolsNav = [
     { 
+      id: 'statistiques' as NavigationTab, 
+      label: 'Statistiques', 
+      icon: BarChart3, 
+      badge: 'KPI',
+      badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' 
+    },
+    { 
       id: 'assistant' as NavigationTab, 
       label: 'Assistant IA', 
       icon: Sparkles, 
@@ -74,7 +82,7 @@ export const DesktopSidebar: React.FC = () => {
       id: 'finances' as NavigationTab, 
       label: 'Finances & Budget', 
       icon: Wallet, 
-      badge: '+12%',
+      badge: 'Ar',
       badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' 
     },
   ];

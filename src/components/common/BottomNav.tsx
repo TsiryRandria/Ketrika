@@ -28,7 +28,7 @@ export const BottomNav: React.FC = () => {
     { id: 'assistant' as NavigationTab, label: 'Assistant IA', icon: Sparkles },
     { id: 'emplois' as NavigationTab, label: 'Emplois', icon: Briefcase },
     { id: 'finances' as NavigationTab, label: 'Finances', icon: Wallet },
-    { id: 'finances' as NavigationTab, label: 'Statistiques', icon: BarChart3 },
+    { id: 'statistiques' as NavigationTab, label: 'Statistiques', icon: BarChart3 },
   ];
 
   const handleTabClick = (tab: NavigationTab) => {
@@ -40,7 +40,7 @@ export const BottomNav: React.FC = () => {
     setShowQuickMenu(prev => !prev);
   };
 
-  const isQuickMenuActive = ['assistant', 'emplois', 'finances'].includes(currentTab);
+  const isQuickMenuActive = ['assistant', 'emplois', 'finances', 'statistiques'].includes(currentTab);
 
   return (
     <div className="fixed bottom-0 left-0 right-0 z-40 px-3 pb-3 pt-1 pointer-events-none md:hidden">

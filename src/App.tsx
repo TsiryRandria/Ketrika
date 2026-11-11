@@ -12,6 +12,7 @@ import { TasksScreen } from './components/screens/TasksScreen';
 import { AssistantScreen } from './components/screens/AssistantScreen';
 import { JobsScreen } from './components/screens/JobsScreen';
 import { FinancesScreen } from './components/screens/FinancesScreen';
+import { StatisticsScreen } from './components/screens/StatisticsScreen';
 import { SettingsScreen } from './components/screens/SettingsScreen';
 import { NotificationsScreen } from './components/screens/NotificationsScreen';
 import { 
@@ -44,6 +45,7 @@ const MainLayout: React.FC = () => {
       case 'assistant': return <AssistantScreen />;
       case 'emplois': return <JobsScreen />;
       case 'finances': return <FinancesScreen />;
+      case 'statistiques': return <StatisticsScreen />;
       case 'parametres': return <SettingsScreen />;
       case 'notifications': return <NotificationsScreen />;
       default: return <HomeScreen />;

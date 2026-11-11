@@ -124,21 +124,8 @@ export const TasksScreen: React.FC = () => {
   return (
     <div className="space-y-4 sm:space-y-6 pb-28 md:pb-8 animate-in fade-in duration-200">
       
-      {/* 1. Header with Title & Calendar View Switcher (Matching page 5) */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 rounded-2xl bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-            <CheckCircle2 className="w-6 h-6 stroke-[2.2]" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-extrabold text-white tracking-tight">Tâches</h1>
-            <p className="text-xs text-emerald-300/70 hidden sm:block">
-              Planifiez, exécutez et suivez vos échéances quotidiennes.
-            </p>
-          </div>
-        </div>
-
-        {/* View Mode Toggle: Liste / Calendrier */}
+      {/* 1. View Mode Switcher (Liste / Calendrier) */}
+      <div className="flex items-center justify-end">
         <div className="flex items-center p-1 rounded-2xl bg-emerald-950/70 border border-emerald-500/25">
           <button
             onClick={() => setViewMode('liste')}
@@ -165,7 +152,7 @@ export const TasksScreen: React.FC = () => {
         </div>
       </div>
 
-      {/* 2. Search & Filter Bar */}
+      {/* 2. Search Bar */}
       <div className="flex items-center gap-3">
         <div className="relative flex-1">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-emerald-400/70" />
@@ -177,12 +164,6 @@ export const TasksScreen: React.FC = () => {
             className="w-full pl-10 pr-4 py-2.5 rounded-2xl glass-input text-sm focus:ring-1 focus:ring-emerald-400 transition-all placeholder:text-emerald-300/40"
           />
         </div>
-        <button 
-          className="p-2.5 rounded-2xl glass-panel text-emerald-300 hover:text-white hover:border-emerald-400/50 transition-all"
-          title="Filtres avancés"
-        >
-          <SlidersHorizontal className="w-5 h-5" />
-        </button>
       </div>
 
       {/* 3. Metric Indicator Pills (Matching page 5 top strip) */}

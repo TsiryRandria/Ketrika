@@ -30,8 +30,20 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenQuickCreate }) => {
     setDeviceMode,
     profile,
     notifications,
-    markNotificationRead
+    markNotificationRead,
+    isEditingNote,
+    isProjectDetailOpen,
+    isJobDetailOpen
   } = useApp();
+
+  // Hide top header exclusively on note detail, project detail, and job detail screens
+  if (
+    (currentTab === 'notes' && isEditingNote) || 
+    (currentTab === 'projets' && isProjectDetailOpen) ||
+    (currentTab === 'emplois' && isJobDetailOpen)
+  ) {
+    return null;
+  }
 
   const [showNotifDropdown, setShowNotifDropdown] = useState(false);
   const [globalSearch, setGlobalSearch] = useState('');
@@ -47,6 +59,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenQuickCreate }) => {
       case 'assistant': return 'Assistant IA';
       case 'emplois': return 'Emplois';
       case 'finances': return 'Finances';
+      case 'statistiques': return 'Statistiques';
       case 'parametres': return 'Paramètres';
       case 'notifications': return 'Notifications';
       default: return 'Ketrika';
@@ -85,7 +98,9 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenQuickCreate }) => {
             <KetrikaLogo size="sm" showText={false} />
             <div className="hidden sm:block">
               <div className="flex items-center gap-2">
-                <span className="font-extrabold text-lg text-white tracking-tight">ketrika</span>
+                <span className="font-extrabold text-lg text-white tracking-tight">
+                  {currentTab === 'statistiques' ? 'statistique' : 'ketrika'}
+                </span>
                 <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-semibold">
                   Pro
                 </span>
@@ -96,7 +111,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenQuickCreate }) => {
             </div>
             {/* Mobile center brand */}
             <div className="sm:hidden font-extrabold text-xl text-white tracking-tight">
-              {currentTab === 'accueil' ? 'ketrika' : getScreenTitle()}
+              {currentTab === 'accueil' ? 'ketrika' : (currentTab === 'statistiques' ? 'statistique' : getScreenTitle())}
             </div>
           </div>
         </div>

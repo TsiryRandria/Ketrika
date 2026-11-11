@@ -7,6 +7,7 @@ export type NavigationTab =
   | 'assistant' 
   | 'emplois' 
   | 'finances' 
+  | 'statistiques'
   | 'parametres' 
   | 'notifications';
 

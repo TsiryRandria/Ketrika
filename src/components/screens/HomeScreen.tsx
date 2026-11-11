@@ -6,7 +6,8 @@ import {
   CheckCircle2, 
   Folder, 
   ChevronRight,
-  Layers
+  Layers,
+  BarChart3
 } from 'lucide-react';
 
 export const HomeScreen: React.FC = () => {
@@ -40,12 +41,16 @@ export const HomeScreen: React.FC = () => {
           </div>
         </div>
 
-        {/* Content Split: Radial Gauge + Tasks Counter + Checklist Visual */}
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-5 items-center">
+        {/* Content Split: Radial Gauge + Tasks Counter + Action CTA */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-5">
           
           {/* Progress Circular Gauge */}
-          <div className="md:col-span-4 flex items-center gap-4">
-            <div className="relative w-24 h-24 shrink-0 flex items-center justify-center">
+          <div 
+            onClick={() => setCurrentTab('statistiques')}
+            className="flex items-center gap-4 cursor-pointer group"
+            title="Consulter les statistiques"
+          >
+            <div className="relative w-24 h-24 shrink-0 flex items-center justify-center group-hover:scale-105 transition-transform">
               <svg className="w-full h-full -rotate-90" viewBox="0 0 100 100">
                 {/* Background Ring */}
                 <circle
@@ -93,44 +98,22 @@ export const HomeScreen: React.FC = () => {
             </div>
           </div>
 
-          {/* Action CTA Pill */}
-          <div className="md:col-span-4 flex md:justify-center">
+          {/* Action CTA Pills */}
+          <div className="flex flex-wrap items-center sm:justify-end gap-2">
+            <button
+              onClick={() => setCurrentTab('statistiques')}
+              className="px-4 py-2.5 rounded-full glass-panel-subtle text-emerald-300 hover:text-white hover:border-emerald-400/50 font-semibold text-xs transition-all flex items-center justify-center gap-1.5"
+            >
+              <BarChart3 className="w-3.5 h-3.5" />
+              <span>Statistiques</span>
+            </button>
             <button
               onClick={() => setCurrentTab('taches')}
-              className="w-full sm:w-auto px-5 py-2.5 rounded-full bg-emerald-500/25 border border-emerald-400/40 text-emerald-200 hover:text-white hover:bg-emerald-500/40 font-semibold text-xs transition-all flex items-center justify-center gap-2 group shadow-[0_0_15px_rgba(16,185,129,0.2)]"
+              className="px-5 py-2.5 rounded-full bg-emerald-500/25 border border-emerald-400/40 text-emerald-200 hover:text-white hover:bg-emerald-500/40 font-semibold text-xs transition-all flex items-center justify-center gap-2 group shadow-[0_0_15px_rgba(16,185,129,0.2)]"
             >
               <span>Voir les tâches</span>
               <ArrowRight className="w-4 h-4 text-emerald-300 group-hover:translate-x-1 transition-transform" />
             </button>
-          </div>
-
-          {/* Checklist Vector Graphic (As seen in page 2) */}
-          <div className="md:col-span-4 flex items-center justify-end">
-            <div className="relative p-3 rounded-2xl bg-emerald-950/60 border border-emerald-500/25 w-full max-w-[200px] flex items-center gap-3">
-              <div className="space-y-1.5 flex-1">
-                <div className="flex items-center gap-1.5">
-                  <div className="w-3.5 h-3.5 rounded bg-emerald-500/30 border border-emerald-400/50 flex items-center justify-center">
-                    <CheckCircle2 className="w-2.5 h-2.5 text-emerald-300" />
-                  </div>
-                  <div className="h-1.5 w-16 bg-emerald-500/30 rounded-full" />
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <div className="w-3.5 h-3.5 rounded bg-emerald-500/30 border border-emerald-400/50 flex items-center justify-center">
-                    <CheckCircle2 className="w-2.5 h-2.5 text-emerald-300" />
-                  </div>
-                  <div className="h-1.5 w-20 bg-emerald-500/30 rounded-full" />
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <div className="w-3.5 h-3.5 rounded bg-emerald-500/30 border border-emerald-400/50 flex items-center justify-center">
-                    <CheckCircle2 className="w-2.5 h-2.5 text-emerald-300" />
-                  </div>
-                  <div className="h-1.5 w-12 bg-emerald-500/30 rounded-full" />
-                </div>
-              </div>
-              <div className="w-8 h-8 rounded-full bg-emerald-500 text-slate-950 flex items-center justify-center shadow-[0_0_12px_#10b981]">
-                <CheckCircle2 className="w-5 h-5 stroke-[2.5]" />
-              </div>
-            </div>
           </div>
 
         </div>
