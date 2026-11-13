@@ -44,20 +44,64 @@ export const ProjectsScreen: React.FC = () => {
   const [showEditModal, setShowEditModal] = useState(false);
   const [newSubTaskText, setNewSubTaskText] = useState('');
 
-  // Sync project detail / create open state with app context so TopBar is hidden exclusively
+  // Sync project detail / create / edit open state with app context so TopBar is hidden exclusively
   useEffect(() => {
-    setIsProjectDetailOpen(Boolean(selectedProjectId || showCreateModal));
+    setIsProjectDetailOpen(Boolean(selectedProjectId || showCreateModal || showEditModal));
     return () => {
       setIsProjectDetailOpen(false);
     };
-  }, [selectedProjectId, showCreateModal, setIsProjectDetailOpen]);
+  }, [selectedProjectId, showCreateModal, showEditModal, setIsProjectDetailOpen]);
 
-  // New Project Form state (Category field completely removed, logo upload added)
+  const PROJECT_CATEGORIES = [
+    'Général',
+    'Développement',
+    'Design & Web',
+    'Marketing',
+    'Environnement',
+    'Éducation',
+    'Business',
+    'Personnel',
+  ];
+
+  const toInputDate = (dateStr?: string): string => {
+    if (!dateStr) return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return dateStr;
+    const frMatch = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(dateStr.trim());
+    if (frMatch) return `${frMatch[3]}-${frMatch[2]}-${frMatch[1]}`;
+    return dateStr;
+  };
+
+  const formatDateDisplay = (dateStr?: string): string => {
+    if (!dateStr) return 'Non définie';
+    const isoMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr.trim());
+    if (isoMatch) return `${isoMatch[3]}/${isoMatch[2]}/${isoMatch[1]}`;
+    return dateStr;
+  };
+
+  const parseDateTimestamp = (dateStr?: string): number | null => {
+    if (!dateStr) return null;
+    const normalized = toInputDate(dateStr.trim());
+    const isoMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(normalized);
+    if (!isoMatch) return null;
+    const ts = new Date(Number(isoMatch[1]), Number(isoMatch[2]) - 1, Number(isoMatch[3])).getTime();
+    return Number.isNaN(ts) ? null : ts;
+  };
+
+  const isEndDateBeforeStartDate = (start?: string, end?: string): boolean => {
+    const startTs = parseDateTimestamp(start);
+    const endTs = parseDateTimestamp(end);
+    if (startTs === null || endTs === null) return false;
+    return endTs < startTs;
+  };
+
+  // New Project Form state
   const [newTitle, setNewTitle] = useState('');
   const [newDesc, setNewDesc] = useState('');
+  const [newCategory, setNewCategory] = useState('Général');
   const [newPriority, setNewPriority] = useState<'Haute' | 'Moyenne' | 'Basse'>('Haute');
   const [newStartDate, setNewStartDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [newEndDate, setNewEndDate] = useState(() => new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString().split('T')[0]);
+  const [newDateError, setNewDateError] = useState('');
   const [newImage, setNewImage] = useState<string>('/assets/images/project_code.jpg');
   const [isCustomLogo, setIsCustomLogo] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -65,18 +109,27 @@ export const ProjectsScreen: React.FC = () => {
   // Edit Project Form state
   const [editTitle, setEditTitle] = useState('');
   const [editDesc, setEditDesc] = useState('');
+  const [editCategory, setEditCategory] = useState('Général');
   const [editPriority, setEditPriority] = useState<'Haute' | 'Moyenne' | 'Basse'>('Haute');
-  const [editCategory, setEditCategory] = useState('');
   const [editStartDate, setEditStartDate] = useState('');
   const [editEndDate, setEditEndDate] = useState('');
+  const [editDateError, setEditDateError] = useState('');
+  const [editImage, setEditImage] = useState<string>('/assets/images/project_code.jpg');
+  const editFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Delete confirmation modal state
+  const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
 
   const inProgressCount = projects.filter(p => p.status === 'En cours').length;
   const completedCount = projects.filter(p => p.status === 'Terminé').length;
+  const inProgressPercent = projects.length > 0 ? Math.round((inProgressCount / projects.length) * 100) : 0;
+  const completedPercent = projects.length > 0 ? Math.round((completedCount / projects.length) * 100) : 0;
 
   const filteredProjects = projects.filter(p => {
     const matchesSearch = 
       p.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
-      p.description.toLowerCase().includes(searchQuery.toLowerCase());
+      p.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      p.category.toLowerCase().includes(searchQuery.toLowerCase());
     
     if (!matchesSearch) return false;
 
@@ -126,6 +179,13 @@ export const ProjectsScreen: React.FC = () => {
     e.preventDefault();
     if (!newTitle.trim()) return;
 
+    if (isEndDateBeforeStartDate(newStartDate, newEndDate)) {
+      setNewDateError("La date d'échéance ne peut pas être antérieure à la date de début.");
+      return;
+    }
+
+    setNewDateError('');
+
     addProject({
       title: newTitle.trim(),
       description: newDesc.trim() || 'Projet stratégique géré sur Ketrika.',
@@ -134,7 +194,7 @@ export const ProjectsScreen: React.FC = () => {
       priority: newPriority,
       status: 'En cours',
       progress: 0,
-      category: 'Général',
+      category: newCategory.trim() || 'Général',
       image: newImage || '/assets/images/project_code.jpg',
       tasks: [
         { id: `sub-${Date.now()}-1`, text: 'Définir les exigences et jalons', completed: false },
@@ -146,18 +206,35 @@ export const ProjectsScreen: React.FC = () => {
 
     setNewTitle('');
     setNewDesc('');
+    setNewCategory('Général');
+    setNewDateError('');
     setNewImage('/assets/images/project_code.jpg');
     setIsCustomLogo(false);
     setShowCreateModal(false);
   };
 
+  const handleEditLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      if (typeof reader.result === 'string') {
+        setEditImage(reader.result);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
   const openEditModal = (proj: Project) => {
     setEditTitle(proj.title);
     setEditDesc(proj.description);
+    setEditCategory(proj.category || 'Général');
     setEditPriority(proj.priority);
-    setEditCategory(proj.category);
-    setEditStartDate(proj.startDate);
-    setEditEndDate(proj.endDate);
+    setEditStartDate(toInputDate(proj.startDate));
+    setEditEndDate(toInputDate(proj.endDate));
+    setEditDateError('');
+    setEditImage(proj.image || '/assets/images/project_code.jpg');
     setShowEditModal(true);
   };
 
@@ -165,13 +242,21 @@ export const ProjectsScreen: React.FC = () => {
     e.preventDefault();
     if (!activeProject || !editTitle.trim()) return;
 
+    if (isEndDateBeforeStartDate(editStartDate, editEndDate)) {
+      setEditDateError("La date d'échéance ne peut pas être antérieure à la date de début.");
+      return;
+    }
+
+    setEditDateError('');
+
     updateProject(activeProject.id, {
-      title: editTitle,
-      description: editDesc,
+      title: editTitle.trim(),
+      description: editDesc.trim(),
+      category: editCategory.trim() || 'Général',
       priority: editPriority,
-      category: editCategory,
       startDate: editStartDate,
       endDate: editEndDate,
+      image: editImage || '/assets/images/project_code.jpg',
     });
     setShowEditModal(false);
   };
@@ -209,6 +294,256 @@ export const ProjectsScreen: React.FC = () => {
       progress,
     });
   };
+
+  // ==========================================
+  // DEDICATED FULL-PAGE EDIT PROJECT VIEW
+  // Occupies full available width & height, no boxed frame, only Back button top-left
+  // ==========================================
+  if (showEditModal && activeProject) {
+    return (
+      <div className="w-full min-h-screen flex flex-col max-w-4xl mx-auto px-2 sm:px-6 pt-2 pb-36 md:pb-16 animate-in fade-in duration-200">
+        <form onSubmit={handleSaveEdit} className="flex-1 flex flex-col justify-between space-y-8">
+          
+          {/* Top Row: ONLY Back Button in the top-left */}
+          <div className="flex items-center pb-2">
+            <button
+              type="button"
+              onClick={() => setShowEditModal(false)}
+              className="p-3 rounded-2xl bg-emerald-950/70 border border-emerald-500/30 text-emerald-300 hover:text-white hover:border-emerald-400 hover:bg-emerald-900/60 transition-all flex items-center justify-center shrink-0 group select-none shadow-[0_0_15px_rgba(0,230,118,0.15)] cursor-pointer"
+              title="Retour aux détails du projet"
+              aria-label="Retour aux détails du projet"
+            >
+              <ArrowLeft className="w-5 h-5 group-hover:-translate-x-1 transition-transform text-emerald-400" />
+            </button>
+          </div>
+
+          {/* Form Content directly on the canvas without excessive outer framing */}
+          <div className="space-y-8 flex-1">
+            
+            {/* Visual & Logo Section: Modify, replace or delete project logo */}
+            <div className="flex items-center gap-5 pb-6 border-b border-emerald-500/20">
+              {/* Logo / Cover Preview */}
+              <div className="relative group w-24 h-24 sm:w-28 sm:h-28 rounded-3xl overflow-hidden shrink-0 border-2 border-emerald-400/50 shadow-[0_0_25px_rgba(16,185,129,0.3)] bg-emerald-950/80">
+                <img
+                  src={editImage || '/assets/images/project_code.jpg'}
+                  alt="Logo du projet"
+                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                />
+                <button
+                  type="button"
+                  onClick={() => editFileInputRef.current?.click()}
+                  className="absolute inset-0 bg-slate-950/75 opacity-0 group-hover:opacity-100 flex flex-col items-center justify-center text-emerald-300 transition-opacity p-2 text-center cursor-pointer"
+                  title="Changer le logo"
+                >
+                  <Upload className="w-5 h-5 mb-1" />
+                  <span className="text-[10px] font-bold">Changer</span>
+                </button>
+              </div>
+
+              {/* Logo actions directly to the right */}
+              <div className="flex flex-wrap items-center gap-3">
+                <input
+                  type="file"
+                  ref={editFileInputRef}
+                  accept="image/*"
+                  onChange={handleEditLogoUpload}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => editFileInputRef.current?.click()}
+                  className="px-4 py-2.5 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 hover:text-white hover:bg-emerald-500/30 text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-[0_0_12px_rgba(16,185,129,0.2)]"
+                >
+                  <Upload className="w-4 h-4 text-emerald-400" />
+                  <span>Remplacer le logo</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setEditImage('/assets/images/project_code.jpg')}
+                  className="px-3.5 py-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 hover:bg-rose-500/20 hover:text-rose-100 text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer"
+                  title="Supprimer le logo personnalisé"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Supprimer le logo</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Field: Nom du projet */}
+            <div className="space-y-2">
+              <label className="block text-xs font-bold uppercase tracking-widest text-emerald-400/80">
+                Nom du projet *
+              </label>
+              <input
+                type="text"
+                required
+                value={editTitle}
+                onChange={(e) => setEditTitle(e.target.value)}
+                className="w-full text-2xl sm:text-4xl font-extrabold text-white placeholder:text-emerald-400/25 bg-transparent border-b-2 border-emerald-500/25 focus:border-emerald-400 outline-none pb-3 transition-colors tracking-tight"
+              />
+            </div>
+
+            {/* Field: Description (Considérablement agrandi pour la saisie confortable de longs textes) */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-bold uppercase tracking-widest text-emerald-400/80">
+                  Description
+                </label>
+                <span className="text-[11px] text-emerald-400/50 font-medium">
+                  {editDesc.length > 0 ? `${editDesc.length} caractères` : 'Objectifs, livrables, spécifications...'}
+                </span>
+              </div>
+              <textarea
+                rows={9}
+                value={editDesc}
+                onChange={(e) => setEditDesc(e.target.value)}
+                placeholder="Décrivez en détail les objectifs clés, les livrables attendus, les étapes stratégiques et les ressources nécessaires pour ce projet..."
+                className="w-full min-h-[220px] sm:min-h-[280px] text-base sm:text-lg text-emerald-50 placeholder:text-emerald-400/30 bg-emerald-950/25 rounded-3xl p-5 border border-emerald-500/25 focus:border-emerald-400 focus:bg-emerald-950/45 focus:shadow-[0_0_20px_rgba(0,230,118,0.15)] outline-none resize-y transition-all leading-relaxed"
+              />
+            </div>
+
+            {/* Field: Catégorie & Priorité */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+              <div className="space-y-2.5">
+                <label className="block text-xs font-bold uppercase tracking-widest text-emerald-400/80 flex items-center gap-1.5">
+                  <Tag className="w-4 h-4 text-emerald-400" />
+                  Catégorie
+                </label>
+                <select
+                  value={editCategory}
+                  onChange={(e) => setEditCategory(e.target.value)}
+                  className="w-full px-4 py-3 rounded-2xl bg-emerald-950/60 border border-emerald-500/25 text-white text-sm focus:border-emerald-400 focus:outline-none transition-colors"
+                >
+                  {!PROJECT_CATEGORIES.includes(editCategory) && editCategory && (
+                    <option value={editCategory}>{editCategory}</option>
+                  )}
+                  {PROJECT_CATEGORIES.map((cat) => (
+                    <option key={cat} value={cat}>{cat}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-2.5">
+                <label className="block text-xs font-bold uppercase tracking-widest text-emerald-400/80">
+                  Priorité
+                </label>
+                <div className="inline-flex items-center p-1 rounded-2xl bg-emerald-950/70 border border-emerald-500/30 gap-1.5 shadow-sm">
+                  {(['Haute', 'Moyenne', 'Basse'] as const).map((p) => {
+                    const isSelected = editPriority === p;
+                    return (
+                      <button
+                        key={p}
+                        type="button"
+                        onClick={() => setEditPriority(p)}
+                        className={`px-4 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                          isSelected
+                            ? p === 'Haute'
+                              ? 'bg-rose-500 text-white shadow-[0_0_14px_rgba(244,63,94,0.55)]'
+                              : p === 'Moyenne'
+                              ? 'bg-amber-400 text-slate-950 shadow-[0_0_14px_rgba(251,191,36,0.55)]'
+                              : 'bg-emerald-400 text-slate-950 shadow-[0_0_14px_rgba(52,211,153,0.55)]'
+                            : 'text-emerald-200/70 hover:text-white hover:bg-emerald-900/40'
+                        }`}
+                      >
+                        <span className={`w-1.5 h-1.5 rounded-full ${
+                          isSelected
+                            ? p === 'Haute' ? 'bg-white' : 'bg-slate-950'
+                            : p === 'Haute' ? 'bg-rose-400' : p === 'Moyenne' ? 'bg-amber-400' : 'bg-emerald-400'
+                        }`} />
+                        <span>{p}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Fields: Date de début & Échéance */}
+            <div className="space-y-2 pt-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                <div className="space-y-2">
+                  <label className="block text-xs font-bold uppercase tracking-widest text-emerald-400/80 flex items-center gap-1.5">
+                    <Calendar className="w-4 h-4 text-emerald-400" />
+                    Date de début
+                  </label>
+                  <input
+                    type="date"
+                    value={editStartDate}
+                    onChange={(e) => {
+                      const nextStart = e.target.value;
+                      setEditStartDate(nextStart);
+                      if (isEndDateBeforeStartDate(nextStart, editEndDate)) {
+                        setEditDateError("La date d'échéance ne peut pas être antérieure à la date de début.");
+                      } else {
+                        setEditDateError('');
+                      }
+                    }}
+                    className="w-full px-4 py-3 rounded-2xl bg-emerald-950/40 border border-emerald-500/25 text-white text-sm focus:border-emerald-400 focus:outline-none transition-colors [color-scheme:dark]"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="block text-xs font-bold uppercase tracking-widest text-emerald-400/80 flex items-center gap-1.5">
+                    <Clock className="w-4 h-4 text-emerald-400" />
+                    Échéance
+                  </label>
+                  <input
+                    type="date"
+                    value={editEndDate}
+                    min={editStartDate || undefined}
+                    onChange={(e) => {
+                      const nextEnd = e.target.value;
+                      setEditEndDate(nextEnd);
+                      if (isEndDateBeforeStartDate(editStartDate, nextEnd)) {
+                        setEditDateError("La date d'échéance ne peut pas être antérieure à la date de début.");
+                      } else {
+                        setEditDateError('');
+                      }
+                    }}
+                    className={`w-full px-4 py-3 rounded-2xl bg-emerald-950/40 border text-white text-sm focus:outline-none transition-colors [color-scheme:dark] ${
+                      editDateError || isEndDateBeforeStartDate(editStartDate, editEndDate)
+                        ? 'border-rose-500/70 focus:border-rose-400'
+                        : 'border-emerald-500/25 focus:border-emerald-400'
+                    }`}
+                  />
+                </div>
+              </div>
+
+              {(editDateError || isEndDateBeforeStartDate(editStartDate, editEndDate)) && (
+                <p className="text-xs font-semibold text-rose-400 pt-1">
+                  {editDateError || "La date d'échéance ne peut pas être antérieure à la date de début."}
+                </p>
+              )}
+            </div>
+
+          </div>
+
+          {/* Bottom Action Area: Always visible above bottom navigation bar with adapted spacing */}
+          <div className="sticky bottom-[84px] md:bottom-6 z-30 pt-4 pb-2 mt-8 pointer-events-auto">
+            <div className="w-full glass-panel rounded-2xl p-3.5 sm:p-4 border border-emerald-400/50 shadow-[0_12px_40px_rgba(0,18,12,0.8)] backdrop-blur-2xl flex flex-col sm:flex-row items-center justify-between gap-3">
+              <div className="hidden sm:flex items-center gap-2 text-xs text-emerald-300/80">
+                <Sparkles className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>
+                  {editTitle.trim() 
+                    ? `Prêt à enregistrer : « ${editTitle.trim()} »` 
+                    : 'Renseignez au minimum le nom du projet'}
+                </span>
+              </div>
+              <button
+                type="submit"
+                disabled={!editTitle.trim() || isEndDateBeforeStartDate(editStartDate, editEndDate)}
+                className="w-full sm:w-auto px-8 py-3.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 text-slate-950 font-extrabold text-sm shadow-[0_0_25px_rgba(0,230,118,0.5)] hover:shadow-[0_0_35px_rgba(0,230,118,0.7)] hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-40 disabled:hover:scale-100 flex items-center justify-center cursor-pointer shrink-0"
+              >
+                <span>Enregistrer les modifications</span>
+              </button>
+            </div>
+          </div>
+
+        </form>
+      </div>
+    );
+  }
 
   // ==========================================
   // DEDICATED FULL-PAGE PROJECT DETAIL VIEW
@@ -261,13 +596,10 @@ export const ProjectsScreen: React.FC = () => {
               <span>Modifier</span>
             </button>
 
-            {/* Delete Project */}
+            {/* Delete Project (Requires Confirmation) */}
             <button
               type="button"
-              onClick={() => {
-                deleteProject(activeProject.id);
-                setSelectedProjectId(null);
-              }}
+              onClick={() => setProjectToDelete(activeProject)}
               className="p-2 rounded-xl text-rose-400/80 hover:text-rose-200 hover:bg-rose-500/15 transition-colors"
               title="Supprimer ce projet"
             >
@@ -316,12 +648,12 @@ export const ProjectsScreen: React.FC = () => {
               <div className="flex flex-wrap items-center gap-4 text-xs sm:text-sm text-emerald-300/80 mt-5 pt-4 border-t border-emerald-500/20">
                 <div className="flex items-center gap-2">
                   <Calendar className="w-4 h-4 text-emerald-400" />
-                  <span>Début : <strong>{activeProject.startDate}</strong></span>
+                  <span>Début : <strong>{formatDateDisplay(activeProject.startDate)}</strong></span>
                 </div>
                 <span className="text-emerald-500/30" aria-hidden="true">•</span>
                 <div className="flex items-center gap-2">
                   <Clock className="w-4 h-4 text-emerald-400" />
-                  <span>Échéance : <strong>{activeProject.endDate}</strong></span>
+                  <span>Échéance : <strong>{formatDateDisplay(activeProject.endDate)}</strong></span>
                 </div>
               </div>
             </div>
@@ -450,122 +782,49 @@ export const ProjectsScreen: React.FC = () => {
           </div>
         </div>
 
-        {/* Edit Project Modal */}
-        {showEditModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-200">
-            <div className="w-full max-w-lg glass-panel rounded-3xl p-6 border border-emerald-400/50 shadow-2xl relative">
-              <div className="flex items-center justify-between pb-3 border-b border-emerald-500/20">
-                <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                  <Edit3 className="w-5 h-5 text-emerald-400" />
-                  Modifier le projet
+        {/* Modal: Confirmer la suppression d'un projet */}
+        {projectToDelete && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-150">
+            <div className="w-full max-w-md glass-panel rounded-3xl p-6 border border-rose-500/40 shadow-2xl space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-rose-500/20">
+                <h3 className="text-base font-bold text-white flex items-center gap-2">
+                  <Trash2 className="w-4 h-4 text-rose-400" />
+                  <span>Supprimer ce projet ?</span>
                 </h3>
                 <button
-                  onClick={() => setShowEditModal(false)}
-                  className="text-emerald-400/80 hover:text-white"
+                  type="button"
+                  onClick={() => setProjectToDelete(null)}
+                  className="text-emerald-400/70 hover:text-white"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
-
-              <form onSubmit={handleSaveEdit} className="space-y-4 mt-4">
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-emerald-300 mb-1">
-                    Nom du projet *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={editTitle}
-                    onChange={(e) => setEditTitle(e.target.value)}
-                    className="w-full px-4 py-2.5 rounded-2xl glass-input text-sm"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-emerald-300 mb-1">
-                    Description
-                  </label>
-                  <textarea
-                    rows={3}
-                    value={editDesc}
-                    onChange={(e) => setEditDesc(e.target.value)}
-                    className="w-full px-4 py-2.5 rounded-2xl glass-input text-sm"
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-bold uppercase tracking-wider text-emerald-300 mb-1">
-                      Priorité
-                    </label>
-                    <select
-                      value={editPriority}
-                      onChange={(e) => setEditPriority(e.target.value as any)}
-                      className="w-full px-3 py-2.5 rounded-2xl glass-input text-sm bg-emerald-950 text-white"
-                    >
-                      <option value="Haute">Haute</option>
-                      <option value="Moyenne">Moyenne</option>
-                      <option value="Basse">Basse</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold uppercase tracking-wider text-emerald-300 mb-1">
-                      Catégorie
-                    </label>
-                    <input
-                      type="text"
-                      value={editCategory}
-                      onChange={(e) => setEditCategory(e.target.value)}
-                      className="w-full px-4 py-2.5 rounded-2xl glass-input text-sm"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-bold uppercase tracking-wider text-emerald-300 mb-1">
-                      Date début
-                    </label>
-                    <input
-                      type="text"
-                      value={editStartDate}
-                      onChange={(e) => setEditStartDate(e.target.value)}
-                      className="w-full px-4 py-2.5 rounded-2xl glass-input text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold uppercase tracking-wider text-emerald-300 mb-1">
-                      Échéance
-                    </label>
-                    <input
-                      type="text"
-                      value={editEndDate}
-                      onChange={(e) => setEditEndDate(e.target.value)}
-                      className="w-full px-4 py-2.5 rounded-2xl glass-input text-sm"
-                    />
-                  </div>
-                </div>
-
-                <div className="pt-3 border-t border-emerald-500/20 flex justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowEditModal(false)}
-                    className="px-4 py-2 rounded-xl glass-panel-subtle text-emerald-300 text-xs font-bold"
-                  >
-                    Annuler
-                  </button>
-                  <button
-                    type="submit"
-                    className="px-5 py-2 rounded-xl bg-emerald-500 text-slate-950 font-bold text-xs shadow-[0_0_15px_rgba(0,230,118,0.5)]"
-                  >
-                    Enregistrer les modifications
-                  </button>
-                </div>
-              </form>
+              <p className="text-xs sm:text-sm text-emerald-100/80 leading-relaxed">
+                Voulez-vous vraiment supprimer définitivement le projet <strong className="text-white">« {projectToDelete.title} »</strong> ainsi que ses {projectToDelete.tasks.length} tâches associées ?
+              </p>
+              <div className="pt-2 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setProjectToDelete(null)}
+                  className="px-4 py-2 rounded-xl glass-panel-subtle text-emerald-200 hover:text-white text-xs font-bold"
+                >
+                  Annuler
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    deleteProject(projectToDelete.id);
+                    setProjectToDelete(null);
+                    setSelectedProjectId(null);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-rose-500 hover:bg-rose-600 text-white text-xs font-bold shadow-[0_0_15px_rgba(244,63,94,0.45)]"
+                >
+                  Supprimer définitivement
+                </button>
+              </div>
             </div>
           </div>
         )}
-
       </div>
     );
   }
@@ -576,7 +835,7 @@ export const ProjectsScreen: React.FC = () => {
   // ==========================================
   if (showCreateModal) {
     return (
-      <div className="w-full min-h-[calc(100vh-100px)] flex flex-col justify-between max-w-4xl mx-auto px-2 sm:px-6 py-4 animate-in fade-in duration-200">
+      <div className="w-full min-h-screen flex flex-col max-w-4xl mx-auto px-2 sm:px-6 pt-2 pb-36 md:pb-16 animate-in fade-in duration-200">
         <form onSubmit={handleCreateProject} className="flex-1 flex flex-col justify-between space-y-8">
           
           {/* Top Row: ONLY Back Button in the top-left */}
@@ -587,6 +846,8 @@ export const ProjectsScreen: React.FC = () => {
                 setShowCreateModal(false);
                 setNewTitle('');
                 setNewDesc('');
+                setNewCategory('Général');
+                setNewDateError('');
               }}
               className="p-3 rounded-2xl bg-emerald-950/70 border border-emerald-500/30 text-emerald-300 hover:text-white hover:border-emerald-400 hover:bg-emerald-900/60 transition-all flex items-center justify-center shrink-0 group select-none shadow-[0_0_15px_rgba(0,230,118,0.15)] cursor-pointer"
               title="Retour aux projets"
@@ -599,8 +860,8 @@ export const ProjectsScreen: React.FC = () => {
           {/* Form Content directly on the canvas without excessive outer framing */}
           <div className="space-y-8 flex-1">
             
-            {/* Visual & Logo Section: Add or import project logo */}
-            <div className="flex flex-col sm:flex-row sm:items-center gap-5 pb-6 border-b border-emerald-500/20">
+            {/* Visual & Logo Section: Project logo with import button directly at its right */}
+            <div className="flex items-center gap-5 pb-6 border-b border-emerald-500/20">
               {/* Logo / Cover Preview */}
               <div className="relative group w-24 h-24 sm:w-28 sm:h-28 rounded-3xl overflow-hidden shrink-0 border-2 border-emerald-400/50 shadow-[0_0_25px_rgba(16,185,129,0.3)] bg-emerald-950/80">
                 <img
@@ -619,67 +880,36 @@ export const ProjectsScreen: React.FC = () => {
                 </button>
               </div>
 
-              {/* Logo actions & Presets */}
-              <div className="flex-1 space-y-3">
-                <div className="flex flex-wrap items-center gap-3">
-                  <input
-                    type="file"
-                    ref={fileInputRef}
-                    accept="image/*"
-                    onChange={handleLogoUpload}
-                    className="hidden"
-                  />
+              {/* Logo Import Button directly to the right */}
+              <div className="flex items-center gap-3">
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  accept="image/*"
+                  onChange={handleLogoUpload}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="px-4 py-2.5 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 hover:text-white hover:bg-emerald-500/30 text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-[0_0_12px_rgba(16,185,129,0.2)]"
+                >
+                  <Upload className="w-4 h-4 text-emerald-400" />
+                  <span>{isCustomLogo ? 'Remplacer le logo importé' : 'Importer un logo'}</span>
+                </button>
+
+                {isCustomLogo && (
                   <button
                     type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="px-4 py-2.5 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 hover:text-white hover:bg-emerald-500/30 text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-[0_0_12px_rgba(16,185,129,0.2)]"
+                    onClick={() => {
+                      setNewImage('/assets/images/project_code.jpg');
+                      setIsCustomLogo(false);
+                    }}
+                    className="px-3 py-2 rounded-xl text-emerald-400/60 hover:text-rose-400 text-xs font-semibold transition-colors cursor-pointer"
                   >
-                    <Upload className="w-4 h-4 text-emerald-400" />
-                    <span>{isCustomLogo ? 'Remplacer le logo importé' : 'Importer un logo'}</span>
+                    Réinitialiser
                   </button>
-
-                  {isCustomLogo && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setNewImage('/assets/images/project_code.jpg');
-                        setIsCustomLogo(false);
-                      }}
-                      className="px-3 py-2 rounded-xl text-emerald-400/60 hover:text-rose-400 text-xs font-semibold transition-colors cursor-pointer"
-                    >
-                      Réinitialiser
-                    </button>
-                  )}
-                </div>
-
-                {/* Preset suggestions */}
-                <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pt-1">
-                  <span className="text-[11px] text-emerald-400/60 font-medium shrink-0">
-                    Ou choisir un thème :
-                  </span>
-                  {[
-                    { label: 'Code & Tech', url: '/assets/images/project_code.jpg' },
-                    { label: 'Architecture', url: '/assets/images/project_architecture.jpg' },
-                    { label: 'Écologie', url: '/assets/images/project_eco.jpg' },
-                    { label: 'Cloud & Mobile', url: '/assets/images/project_tech.jpg' },
-                  ].map((preset) => (
-                    <button
-                      key={preset.url}
-                      type="button"
-                      onClick={() => {
-                        setNewImage(preset.url);
-                        setIsCustomLogo(false);
-                      }}
-                      className={`px-3 py-1 rounded-xl text-xs font-semibold transition-all shrink-0 cursor-pointer ${
-                        newImage === preset.url && !isCustomLogo
-                          ? 'bg-emerald-400 text-slate-950 font-bold shadow-[0_0_10px_#34d399]'
-                          : 'bg-emerald-950/50 text-emerald-300/80 hover:text-white border border-emerald-500/20'
-                      }`}
-                    >
-                      {preset.label}
-                    </button>
-                  ))}
-                </div>
+                )}
               </div>
             </div>
 
@@ -699,95 +929,157 @@ export const ProjectsScreen: React.FC = () => {
               />
             </div>
 
-            {/* Field: Description */}
+            {/* Field: Description (Considérablement agrandi pour la saisie confortable de longs textes) */}
             <div className="space-y-2">
-              <label className="block text-xs font-bold uppercase tracking-widest text-emerald-400/80">
-                Description
-              </label>
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-bold uppercase tracking-widest text-emerald-400/80">
+                  Description
+                </label>
+                <span className="text-[11px] text-emerald-400/50 font-medium">
+                  {newDesc.length > 0 ? `${newDesc.length} caractères` : 'Objectifs, livrables, spécifications...'}
+                </span>
+              </div>
               <textarea
-                rows={3}
-                placeholder="Décrivez les objectifs clés, les livrables attendus et l'impact..."
+                rows={9}
+                placeholder="Décrivez en détail les objectifs clés, les livrables attendus, les étapes stratégiques et les ressources nécessaires pour ce projet..."
                 value={newDesc}
                 onChange={(e) => setNewDesc(e.target.value)}
-                className="w-full text-base sm:text-lg text-emerald-100 placeholder:text-emerald-400/25 bg-transparent border-b border-emerald-500/20 focus:border-emerald-400 outline-none py-3 resize-none transition-colors leading-relaxed"
+                className="w-full min-h-[220px] sm:min-h-[280px] text-base sm:text-lg text-emerald-50 placeholder:text-emerald-400/30 bg-emerald-950/25 rounded-3xl p-5 border border-emerald-500/25 focus:border-emerald-400 focus:bg-emerald-950/45 focus:shadow-[0_0_20px_rgba(0,230,118,0.15)] outline-none resize-y transition-all leading-relaxed"
               />
             </div>
 
-            {/* Field: Priorité */}
-            <div className="space-y-3">
-              <label className="block text-xs font-bold uppercase tracking-widest text-emerald-400/80">
-                Priorité
-              </label>
-              <div className="flex flex-wrap gap-3">
-                {(['Haute', 'Moyenne', 'Basse'] as const).map((p) => {
-                  const isSelected = newPriority === p;
-                  return (
-                    <button
-                      key={p}
-                      type="button"
-                      onClick={() => setNewPriority(p)}
-                      className={`px-5 py-2.5 rounded-2xl text-xs sm:text-sm font-bold transition-all flex items-center gap-2 cursor-pointer ${
-                        isSelected
-                          ? p === 'Haute'
-                            ? 'bg-rose-500/25 text-rose-300 border border-rose-500/60 shadow-[0_0_15px_rgba(244,63,94,0.3)]'
-                            : p === 'Moyenne'
-                            ? 'bg-amber-500/25 text-amber-300 border border-amber-500/60 shadow-[0_0_15px_rgba(245,158,11,0.3)]'
-                            : 'bg-emerald-500/25 text-emerald-300 border border-emerald-500/60 shadow-[0_0_15px_rgba(16,185,129,0.3)]'
-                          : 'bg-emerald-950/40 border border-emerald-500/20 text-emerald-200/60 hover:text-white hover:border-emerald-500/40'
-                      }`}
-                    >
-                      <Flag className={`w-3.5 h-3.5 ${p === 'Haute' ? 'text-rose-400' : p === 'Moyenne' ? 'text-amber-400' : 'text-emerald-400'}`} />
-                      <span>Priorité {p}</span>
-                    </button>
-                  );
-                })}
+            {/* Field: Catégorie & Priorité */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+              <div className="space-y-2.5">
+                <label className="block text-xs font-bold uppercase tracking-widest text-emerald-400/80 flex items-center gap-1.5">
+                  <Tag className="w-4 h-4 text-emerald-400" />
+                  Catégorie
+                </label>
+                <select
+                  value={newCategory}
+                  onChange={(e) => setNewCategory(e.target.value)}
+                  className="w-full px-4 py-3 rounded-2xl bg-emerald-950/60 border border-emerald-500/25 text-white text-sm focus:border-emerald-400 focus:outline-none transition-colors"
+                >
+                  {PROJECT_CATEGORIES.map((cat) => (
+                    <option key={cat} value={cat}>{cat}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-2.5">
+                <label className="block text-xs font-bold uppercase tracking-widest text-emerald-400/80">
+                  Priorité
+                </label>
+                <div className="inline-flex items-center p-1 rounded-2xl bg-emerald-950/70 border border-emerald-500/30 gap-1.5 shadow-sm">
+                  {(['Haute', 'Moyenne', 'Basse'] as const).map((p) => {
+                    const isSelected = newPriority === p;
+                    return (
+                      <button
+                        key={p}
+                        type="button"
+                        onClick={() => setNewPriority(p)}
+                        className={`px-4 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                          isSelected
+                            ? p === 'Haute'
+                              ? 'bg-rose-500 text-white shadow-[0_0_14px_rgba(244,63,94,0.55)]'
+                              : p === 'Moyenne'
+                              ? 'bg-amber-400 text-slate-950 shadow-[0_0_14px_rgba(251,191,36,0.55)]'
+                              : 'bg-emerald-400 text-slate-950 shadow-[0_0_14px_rgba(52,211,153,0.55)]'
+                            : 'text-emerald-200/70 hover:text-white hover:bg-emerald-900/40'
+                        }`}
+                      >
+                        <span className={`w-1.5 h-1.5 rounded-full ${
+                          isSelected
+                            ? p === 'Haute' ? 'bg-white' : 'bg-slate-950'
+                            : p === 'Haute' ? 'bg-rose-400' : p === 'Moyenne' ? 'bg-amber-400' : 'bg-emerald-400'
+                        }`} />
+                        <span>{p}</span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             </div>
 
             {/* Fields: Date de début & Échéance (Harmonious 2-column grid directly in the page) */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 pt-2">
-              <div className="space-y-2">
-                <label className="block text-xs font-bold uppercase tracking-widest text-emerald-400/80 flex items-center gap-1.5">
-                  <Calendar className="w-4 h-4 text-emerald-400" />
-                  Date de début
-                </label>
-                <input
-                  type="date"
-                  value={newStartDate}
-                  onChange={(e) => setNewStartDate(e.target.value)}
-                  className="w-full px-4 py-3 rounded-2xl bg-emerald-950/40 border border-emerald-500/25 text-white text-sm focus:border-emerald-400 focus:outline-none transition-colors [color-scheme:dark]"
-                />
+            <div className="space-y-2 pt-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                <div className="space-y-2">
+                  <label className="block text-xs font-bold uppercase tracking-widest text-emerald-400/80 flex items-center gap-1.5">
+                    <Calendar className="w-4 h-4 text-emerald-400" />
+                    Date de début
+                  </label>
+                  <input
+                    type="date"
+                    value={newStartDate}
+                    onChange={(e) => {
+                      const nextStart = e.target.value;
+                      setNewStartDate(nextStart);
+                      if (isEndDateBeforeStartDate(nextStart, newEndDate)) {
+                        setNewDateError("La date d'échéance ne peut pas être antérieure à la date de début.");
+                      } else {
+                        setNewDateError('');
+                      }
+                    }}
+                    className="w-full px-4 py-3 rounded-2xl bg-emerald-950/40 border border-emerald-500/25 text-white text-sm focus:border-emerald-400 focus:outline-none transition-colors [color-scheme:dark]"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="block text-xs font-bold uppercase tracking-widest text-emerald-400/80 flex items-center gap-1.5">
+                    <Clock className="w-4 h-4 text-emerald-400" />
+                    Échéance
+                  </label>
+                  <input
+                    type="date"
+                    value={newEndDate}
+                    min={newStartDate || undefined}
+                    onChange={(e) => {
+                      const nextEnd = e.target.value;
+                      setNewEndDate(nextEnd);
+                      if (isEndDateBeforeStartDate(newStartDate, nextEnd)) {
+                        setNewDateError("La date d'échéance ne peut pas être antérieure à la date de début.");
+                      } else {
+                        setNewDateError('');
+                      }
+                    }}
+                    className={`w-full px-4 py-3 rounded-2xl bg-emerald-950/40 border text-white text-sm focus:outline-none transition-colors [color-scheme:dark] ${
+                      newDateError || isEndDateBeforeStartDate(newStartDate, newEndDate)
+                        ? 'border-rose-500/70 focus:border-rose-400'
+                        : 'border-emerald-500/25 focus:border-emerald-400'
+                    }`}
+                  />
+                </div>
               </div>
 
-              <div className="space-y-2">
-                <label className="block text-xs font-bold uppercase tracking-widest text-emerald-400/80 flex items-center gap-1.5">
-                  <Clock className="w-4 h-4 text-emerald-400" />
-                  Échéance
-                </label>
-                <input
-                  type="date"
-                  value={newEndDate}
-                  onChange={(e) => setNewEndDate(e.target.value)}
-                  className="w-full px-4 py-3 rounded-2xl bg-emerald-950/40 border border-emerald-500/25 text-white text-sm focus:border-emerald-400 focus:outline-none transition-colors [color-scheme:dark]"
-                />
-              </div>
+              {(newDateError || isEndDateBeforeStartDate(newStartDate, newEndDate)) && (
+                <p className="text-xs font-semibold text-rose-400 pt-1">
+                  {newDateError || "La date d'échéance ne peut pas être antérieure à la date de début."}
+                </p>
+              )}
             </div>
 
           </div>
 
-          {/* Bottom Action Area */}
-          <div className="pt-8 flex flex-col sm:flex-row items-center justify-between gap-4 border-t border-emerald-500/15">
-            <p className="text-xs text-emerald-400/60 text-center sm:text-left">
-              Sauvegarde instantanée dans votre base locale SQLite hors connexion.
-            </p>
-            <button
-              type="submit"
-              disabled={!newTitle.trim()}
-              className="w-full sm:w-auto px-8 py-3.5 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-400 text-slate-950 font-extrabold text-sm shadow-[0_0_25px_rgba(0,230,118,0.4)] hover:shadow-[0_0_35px_rgba(0,230,118,0.6)] hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-40 disabled:hover:scale-100 flex items-center justify-center gap-2 cursor-pointer"
-            >
-              <Sparkles className="w-4 h-4 text-slate-950 stroke-[2.5]" />
-              <span>Créer le projet</span>
-            </button>
+          {/* Bottom Action Area: Always visible above bottom navigation bar with adapted spacing */}
+          <div className="sticky bottom-[84px] md:bottom-6 z-30 pt-4 pb-2 mt-8 pointer-events-auto">
+            <div className="w-full glass-panel rounded-2xl p-3.5 sm:p-4 border border-emerald-400/50 shadow-[0_12px_40px_rgba(0,18,12,0.8)] backdrop-blur-2xl flex flex-col sm:flex-row items-center justify-between gap-3">
+              <div className="hidden sm:flex items-center gap-2 text-xs text-emerald-300/80">
+                <Sparkles className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>
+                  {newTitle.trim() 
+                    ? `Prêt à enregistrer : « ${newTitle.trim()} »` 
+                    : 'Renseignez au minimum le nom du projet pour enregistrer'}
+                </span>
+              </div>
+              <button
+                type="submit"
+                disabled={!newTitle.trim() || isEndDateBeforeStartDate(newStartDate, newEndDate)}
+                className="w-full sm:w-auto px-8 py-3.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 text-slate-950 font-extrabold text-sm shadow-[0_0_25px_rgba(0,230,118,0.5)] hover:shadow-[0_0_35px_rgba(0,230,118,0.7)] hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-40 disabled:hover:scale-100 flex items-center justify-center cursor-pointer shrink-0"
+              >
+                <span>Enregistrer le projet</span>
+              </button>
+            </div>
           </div>
 
         </form>
@@ -854,7 +1146,7 @@ export const ProjectsScreen: React.FC = () => {
             <p className="text-xs text-emerald-200/70 font-medium">Projets en cours</p>
             <div className="flex items-baseline gap-1.5 mt-0.5">
               <span className="text-2xl sm:text-3xl font-extrabold text-white">{inProgressCount}</span>
-              <span className="text-xs text-emerald-400 font-bold">+1</span>
+              <span className="text-xs text-emerald-400 font-bold">{inProgressPercent}%</span>
             </div>
           </div>
         </div>
@@ -867,7 +1159,7 @@ export const ProjectsScreen: React.FC = () => {
             <p className="text-xs text-emerald-200/70 font-medium">Projets terminés</p>
             <div className="flex items-baseline gap-1.5 mt-0.5">
               <span className="text-2xl sm:text-3xl font-extrabold text-white">{completedCount}</span>
-              <span className="text-xs text-emerald-400 font-bold">+1</span>
+              <span className="text-xs text-emerald-400 font-bold">{completedPercent}%</span>
             </div>
           </div>
         </div>
@@ -934,10 +1226,10 @@ export const ProjectsScreen: React.FC = () => {
                   <div className="mt-4 pt-3 border-t border-emerald-500/20">
                     <div className="flex items-center justify-between text-[11px] text-emerald-300/80 mb-2">
                       <span className="flex items-center gap-1">
-                        <Calendar className="w-3 h-3 text-emerald-400" /> {proj.startDate}
+                        <Calendar className="w-3 h-3 text-emerald-400" /> {formatDateDisplay(proj.startDate)}
                       </span>
                       <span className="flex items-center gap-1">
-                        <Clock className="w-3 h-3 text-emerald-400" /> {proj.endDate}
+                        <Clock className="w-3 h-3 text-emerald-400" /> {formatDateDisplay(proj.endDate)}
                       </span>
                     </div>
 

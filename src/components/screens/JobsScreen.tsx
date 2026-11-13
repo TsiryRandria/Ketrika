@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
 import { Job } from '../../types';
 import { 
@@ -37,13 +37,22 @@ export const JobsScreen: React.FC = () => {
 
   const [searchQuery, setSearchQuery] = useState('');
   const [filterFavoriteOnly, setFilterFavoriteOnly] = useState(false);
+  const [filterAppliedOnly, setFilterAppliedOnly] = useState(false);
+  const topRef = useRef<HTMLDivElement | null>(null);
   
   // Dedicated single-page job detail view
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
 
+  const getDefaultCvName = () => {
+    const cvDoc = profile.documents.find(
+      (d) => d.category === 'CV' || d.name.toLowerCase().includes('cv')
+    );
+    return cvDoc?.name || profile.documents[0]?.name || 'Mon CV.pdf';
+  };
+
   // Application Modal state
   const [applyingJob, setApplyingJob] = useState<Job | null>(null);
-  const [selectedCv, setSelectedCv] = useState(profile.documents[2]?.name || 'Mon CV.pdf');
+  const [selectedCv, setSelectedCv] = useState(() => getDefaultCvName());
   const [coverNote, setCoverNote] = useState('');
   const [showAppliedToast, setShowAppliedToast] = useState(false);
 
@@ -58,7 +67,7 @@ export const JobsScreen: React.FC = () => {
   const activeJob = jobs.find(j => j.id === selectedJobId);
 
   const favoriteJobsCount = jobs.filter(j => j.isFavorite).length;
-  const appliedJobsCount = jobs.filter(j => j.applied).length + 3;
+  const appliedJobsCount = jobs.filter(j => j.applied).length;
 
   const filteredJobs = jobs.filter(j => {
     const matchesSearch = 
@@ -68,13 +77,23 @@ export const JobsScreen: React.FC = () => {
     
     if (!matchesSearch) return false;
     if (filterFavoriteOnly && !j.isFavorite) return false;
+    if (filterAppliedOnly && !j.applied) return false;
     return true;
   });
+
+  const openApplyModal = (job: Job) => {
+    setSelectedCv(job.appliedCv || getDefaultCvName());
+    setCoverNote(job.appliedCoverNote || '');
+    setApplyingJob(job);
+  };
 
   const handleConfirmApply = (e: React.FormEvent) => {
     e.preventDefault();
     if (!applyingJob) return;
-    applyToJob(applyingJob.id);
+    applyToJob(applyingJob.id, {
+      selectedCv,
+      coverNote,
+    });
     setApplyingJob(null);
     setShowAppliedToast(true);
     setTimeout(() => setShowAppliedToast(false), 3500);
@@ -143,14 +162,19 @@ export const JobsScreen: React.FC = () => {
 
             {/* Postuler Button */}
             {activeJob.applied ? (
-              <span className="px-4 py-2 rounded-xl bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 font-bold text-xs flex items-center gap-1.5 shadow-[0_0_12px_rgba(16,185,129,0.2)]">
+              <button
+                type="button"
+                onClick={() => openApplyModal(activeJob)}
+                className="px-4 py-2 rounded-xl bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 hover:border-emerald-400/70 font-bold text-xs flex items-center gap-1.5 shadow-[0_0_12px_rgba(16,185,129,0.2)] transition-all"
+                title="Consulter ou modifier votre candidature"
+              >
                 <Check className="w-4 h-4 stroke-[3]" />
                 <span>Candidature envoyée</span>
-              </span>
+              </button>
             ) : (
               <button
                 type="button"
-                onClick={() => setApplyingJob(activeJob)}
+                onClick={() => openApplyModal(activeJob)}
                 className="px-4 py-2 rounded-xl bg-emerald-500 text-slate-950 font-bold text-xs shadow-[0_0_15px_rgba(0,230,118,0.5)] flex items-center gap-1.5 hover:shadow-[0_0_22px_rgba(0,230,118,0.7)] transition-all"
               >
                 <Send className="w-4 h-4" />
@@ -384,14 +408,36 @@ export const JobsScreen: React.FC = () => {
               </div>
 
               {activeJob.applied ? (
-                <div className="p-4 rounded-2xl bg-emerald-950/80 border border-emerald-500/40 text-center space-y-2">
+                <div className="p-4 rounded-2xl bg-emerald-950/80 border border-emerald-500/40 text-center space-y-2.5">
                   <div className="w-10 h-10 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 flex items-center justify-center mx-auto">
                     <Check className="w-5 h-5 stroke-[3]" />
                   </div>
                   <p className="text-sm font-bold text-white">Candidature enregistrée !</p>
                   <p className="text-xs text-emerald-300/70">
-                    Vos documents ({profile.name}, {selectedCv}) sont accessibles aux recruteurs de {activeJob.company}.
+                    Vos documents ({profile.name}, {activeJob.appliedCv || getDefaultCvName()}) sont accessibles aux recruteurs de {activeJob.company}.
                   </p>
+                  {activeJob.appliedAt && (
+                    <p className="text-[11px] text-emerald-400/80 font-medium">
+                      Envoyée le {activeJob.appliedAt}
+                    </p>
+                  )}
+                  {activeJob.appliedCoverNote && (
+                    <div className="p-3 rounded-xl bg-slate-950/50 border border-emerald-500/20 text-left">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-400 mb-1">
+                        Lettre de motivation transmise
+                      </p>
+                      <p className="text-xs text-emerald-100/90 whitespace-pre-line leading-relaxed">
+                        {activeJob.appliedCoverNote}
+                      </p>
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => openApplyModal(activeJob)}
+                    className="w-full py-2 px-3 rounded-xl glass-panel-subtle border border-emerald-500/30 hover:border-emerald-400/60 text-emerald-200 hover:text-white text-xs font-semibold transition-all"
+                  >
+                    Modifier le CV ou la lettre
+                  </button>
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -399,7 +445,8 @@ export const JobsScreen: React.FC = () => {
                     Postulez directement avec votre profil et CV enregistré sur Ketrika.
                   </p>
                   <button
-                    onClick={() => setApplyingJob(activeJob)}
+                    type="button"
+                    onClick={() => openApplyModal(activeJob)}
                     className="w-full py-3 px-4 rounded-2xl bg-emerald-500 text-slate-950 font-bold text-xs shadow-[0_0_18px_rgba(0,230,118,0.5)] hover:shadow-[0_0_25px_rgba(0,230,118,0.8)] transition-all flex items-center justify-center gap-2"
                   >
                     <Send className="w-4 h-4" />
@@ -418,6 +465,95 @@ export const JobsScreen: React.FC = () => {
 
         </div>
 
+        {/* Toast Notification */}
+        {showAppliedToast && (
+          <div className="fixed top-5 right-5 z-50 p-4 rounded-2xl bg-emerald-500 text-slate-950 font-bold text-xs shadow-[0_0_25px_rgba(0,230,118,0.6)] flex items-center gap-2 animate-in fade-in slide-in-from-top-4">
+            <CheckCircle2 className="w-4 h-4 stroke-[3]" />
+            <span>Votre candidature a été transmise avec succès !</span>
+          </div>
+        )}
+
+        {/* Modal: Postuler (accessible depuis la vue détail) */}
+        {applyingJob && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-200">
+            <div className="w-full max-w-lg glass-panel rounded-3xl p-6 border border-emerald-400/50 shadow-2xl relative">
+              <div className="flex items-center justify-between pb-3 border-b border-emerald-500/20">
+                <h3 className="text-base font-bold text-white flex items-center gap-2">
+                  <Send className="w-4 h-4 text-emerald-400" />
+                  <span>Candidature · {applyingJob.title} ({applyingJob.company})</span>
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => setApplyingJob(null)}
+                  className="text-emerald-400/80 hover:text-white"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <form onSubmit={handleConfirmApply} className="space-y-4 mt-4">
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-emerald-300 mb-1">
+                    Document CV sélectionné
+                  </label>
+                  <select
+                    value={selectedCv}
+                    onChange={(e) => setSelectedCv(e.target.value)}
+                    className="w-full px-3 py-2.5 rounded-2xl glass-input text-sm bg-emerald-950 text-white"
+                  >
+                    {profile.documents.length === 0 ? (
+                      <option value={selectedCv || 'Mon CV.pdf'}>{selectedCv || 'Mon CV.pdf'}</option>
+                    ) : (
+                      <>
+                        {!profile.documents.some(d => d.name === selectedCv) && selectedCv && (
+                          <option value={selectedCv}>{selectedCv}</option>
+                        )}
+                        {profile.documents.map((d, i) => (
+                          <option key={d.id || i} value={d.name}>{d.name} ({d.type})</option>
+                        ))}
+                      </>
+                    )}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-emerald-300 mb-1">
+                    Lettre de motivation / Note d'introduction (Optionnelle)
+                  </label>
+                  <textarea
+                    rows={3}
+                    placeholder="Pourquoi votre profil correspond à cette offre..."
+                    value={coverNote}
+                    onChange={(e) => setCoverNote(e.target.value)}
+                    className="w-full px-4 py-2.5 rounded-2xl glass-input text-sm text-white"
+                  />
+                </div>
+
+                <div className="p-3 rounded-2xl bg-emerald-950/60 border border-emerald-500/20 text-[11px] text-emerald-300/80 flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>Vos coordonnées ({profile.phone}, {profile.email}) seront transmises directement aux recruteurs.</span>
+                </div>
+
+                <div className="pt-3 border-t border-emerald-500/20 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setApplyingJob(null)}
+                    className="px-4 py-2 rounded-xl glass-panel-subtle text-emerald-300 text-xs font-bold"
+                  >
+                    Annuler
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-5 py-2 rounded-xl bg-emerald-500 text-slate-950 font-bold text-xs shadow-[0_0_15px_rgba(0,230,118,0.5)] hover:shadow-[0_0_20px_rgba(0,230,118,0.8)]"
+                  >
+                    {applyingJob.applied ? 'Mettre à jour la candidature' : 'Transmettre ma candidature'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
       </div>
     );
   }
@@ -426,7 +562,7 @@ export const JobsScreen: React.FC = () => {
   // JOBS LIST VIEW
   // ==========================================
   return (
-    <div className="space-y-4 sm:space-y-6 pb-28 md:pb-8 animate-in fade-in duration-200">
+    <div ref={topRef} className="space-y-4 sm:space-y-6 pb-28 md:pb-8 animate-in fade-in duration-200">
       
       {/* Toast Notification */}
       {showAppliedToast && (
@@ -436,10 +572,14 @@ export const JobsScreen: React.FC = () => {
         </div>
       )}
 
-      {/* 1. Favorites Toggle Header */}
-      <div className="flex items-center justify-end">
+      {/* 1. Favorites & Applied History Toggle Header */}
+      <div className="flex flex-wrap items-center justify-end gap-2">
         <button
-          onClick={() => setFilterFavoriteOnly(!filterFavoriteOnly)}
+          type="button"
+          onClick={() => {
+            setFilterFavoriteOnly(prev => !prev);
+            setFilterAppliedOnly(false);
+          }}
           className={`flex items-center gap-2 px-3.5 py-2 rounded-2xl border text-xs font-bold transition-all ${
             filterFavoriteOnly 
               ? 'bg-rose-500 text-white border-rose-400 shadow-[0_0_15px_rgba(244,63,94,0.5)]' 
@@ -448,6 +588,22 @@ export const JobsScreen: React.FC = () => {
         >
           <Heart className={`w-4 h-4 ${filterFavoriteOnly ? 'fill-current' : 'text-rose-400'}`} />
           <span>Mes favoris ({favoriteJobsCount})</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setFilterAppliedOnly(prev => !prev);
+            setFilterFavoriteOnly(false);
+          }}
+          className={`flex items-center gap-2 px-3.5 py-2 rounded-2xl border text-xs font-bold transition-all ${
+            filterAppliedOnly 
+              ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-[0_0_15px_rgba(0,230,118,0.5)]' 
+              : 'glass-panel text-emerald-200 border-emerald-500/30 hover:border-emerald-400'
+          }`}
+        >
+          <FileText className={`w-4 h-4 ${filterAppliedOnly ? 'text-slate-950' : 'text-emerald-400'}`} />
+          <span>Historique ({appliedJobsCount})</span>
         </button>
       </div>
 
@@ -466,128 +622,187 @@ export const JobsScreen: React.FC = () => {
       </div>
 
       {/* 4. Job Listings */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4 sm:gap-6">
-        {filteredJobs.map((job) => (
-          <div
-            key={job.id}
-            onClick={() => setSelectedJobId(job.id)}
-            className="glass-panel rounded-3xl p-5 border border-emerald-500/30 hover:border-emerald-400/60 shadow-[0_4px_25px_rgba(0,20,15,0.4)] transition-all flex flex-col justify-between group cursor-pointer"
+      {filteredJobs.length === 0 ? (
+        <div className="glass-panel rounded-3xl p-8 border border-emerald-500/25 text-center space-y-3">
+          <div className="w-12 h-12 rounded-2xl bg-emerald-950/80 border border-emerald-500/30 text-emerald-400 flex items-center justify-center mx-auto">
+            {filterAppliedOnly ? <FileText className="w-6 h-6" /> : filterFavoriteOnly ? <Heart className="w-6 h-6 text-rose-400" /> : <Briefcase className="w-6 h-6" />}
+          </div>
+          <p className="text-sm font-bold text-white">
+            {filterAppliedOnly
+              ? 'Aucune candidature enregistrée pour le moment'
+              : filterFavoriteOnly
+                ? 'Aucune offre enregistrée en favori'
+                : 'Aucune offre ne correspond à votre recherche'}
+          </p>
+          <p className="text-xs text-emerald-200/70 max-w-md mx-auto">
+            {filterAppliedOnly
+              ? 'Postulez à une offre pour la retrouver ici avec votre CV sélectionné et votre lettre de motivation.'
+              : 'Modifiez vos filtres ou réinitialisez l’affichage pour consulter toutes les offres disponibles.'}
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              setFilterAppliedOnly(false);
+              setFilterFavoriteOnly(false);
+              setSearchQuery('');
+            }}
+            className="px-4 py-2 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 hover:text-white text-xs font-bold transition-all"
           >
-            <div>
-              {/* Header: Company Emblem + Title & Favorite */}
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  {renderCompanyLogo(job.company, 'md')}
+            Voir toutes les offres
+          </button>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4 sm:gap-6">
+          {filteredJobs.map((job) => (
+            <div
+              key={job.id}
+              onClick={() => setSelectedJobId(job.id)}
+              className="glass-panel rounded-3xl p-5 border border-emerald-500/30 hover:border-emerald-400/60 shadow-[0_4px_25px_rgba(0,20,15,0.4)] transition-all flex flex-col justify-between group cursor-pointer"
+            >
+              <div>
+                {/* Header: Company Emblem + Title & Favorite */}
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    {renderCompanyLogo(job.company, 'md')}
 
-                  <div>
-                    <h3 className="font-bold text-white text-base leading-tight group-hover:text-emerald-300 transition-colors">
-                      {job.title}
-                    </h3>
-                    <p className="text-xs text-emerald-300 font-semibold mt-0.5">{job.company}</p>
-                    <p className="text-[11px] text-emerald-400/60 flex items-center gap-1">
-                      <MapPin className="w-3 h-3 text-emerald-400" /> {job.location}
-                    </p>
+                    <div>
+                      <h3 className="font-bold text-white text-base leading-tight group-hover:text-emerald-300 transition-colors">
+                        {job.title}
+                      </h3>
+                      <p className="text-xs text-emerald-300 font-semibold mt-0.5">{job.company}</p>
+                      <p className="text-[11px] text-emerald-400/60 flex items-center gap-1">
+                        <MapPin className="w-3 h-3 text-emerald-400" /> {job.location}
+                      </p>
+                    </div>
                   </div>
+
+                  {/* Heart Favorite Button */}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleFavoriteJob(job.id);
+                    }}
+                    className="p-1.5 rounded-xl hover:bg-emerald-900/40 transition-colors"
+                  >
+                    <Heart className={`w-5 h-5 ${job.isFavorite ? 'text-rose-400 fill-rose-400' : 'text-emerald-400/50 hover:text-rose-400'}`} />
+                  </button>
                 </div>
 
-                {/* Heart Favorite Button */}
+                {/* Badges strip: Contract + WorkMode */}
+                <div className="flex items-center gap-2 mt-3">
+                  <span className="px-2.5 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 text-[11px] font-bold">
+                    {job.contract}
+                  </span>
+                  <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[11px] font-bold flex items-center gap-1">
+                    <Home className="w-3 h-3" /> {job.workMode}
+                  </span>
+                </div>
+
+                {/* Description */}
+                <p className="text-xs text-emerald-200/70 mt-2.5 line-clamp-2">
+                  {job.description}
+                </p>
+
+                {/* Persisted Application Metadata (CV, Cover Note, Date) */}
+                {job.applied && (job.appliedCv || job.appliedCoverNote || job.appliedAt) && (
+                  <div className="mt-3 p-2.5 rounded-2xl bg-emerald-950/70 border border-emerald-500/30 space-y-1 text-[11px]">
+                    <div className="flex items-center justify-between gap-2 text-emerald-300 font-semibold">
+                      <span className="truncate flex items-center gap-1">
+                        <FileText className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                        <span className="truncate">{job.appliedCv || getDefaultCvName()}</span>
+                      </span>
+                      {job.appliedAt && (
+                        <span className="text-[10px] text-emerald-400/80 shrink-0">{job.appliedAt}</span>
+                      )}
+                    </div>
+                    {job.appliedCoverNote && (
+                      <p className="text-emerald-100/75 line-clamp-2 italic">
+                        « {job.appliedCoverNote} »
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* Salary & Deadline strip */}
+                <div className="mt-3.5 pt-3 border-t border-emerald-500/15 space-y-1.5 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-emerald-400 font-extrabold flex items-center gap-1">
+                      <DollarSign className="w-4 h-4 text-emerald-400" /> {job.salary}
+                    </span>
+                    <span className="text-[11px] text-emerald-400/60 flex items-center gap-1">
+                      <Calendar className="w-3 h-3 text-emerald-400" /> Publié : {job.postedDate}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-[11px] text-emerald-300/80">
+                    <span className="flex items-center gap-1">
+                      <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400" /> {job.rating} · {job.experience}
+                    </span>
+                    <span className="flex items-center gap-1 text-rose-300/80">
+                      <Clock className="w-3 h-3" /> Limite : {job.deadlineDate}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Action Buttons: Voir les détails + Postuler */}
+              <div className="mt-4 pt-3 border-t border-emerald-500/20 grid grid-cols-2 gap-2">
                 <button
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    toggleFavoriteJob(job.id);
+                    setSelectedJobId(job.id);
                   }}
-                  className="p-1.5 rounded-xl hover:bg-emerald-900/40 transition-colors"
+                  className="py-2 px-3 rounded-xl glass-panel-subtle text-emerald-200 hover:text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition-all"
                 >
-                  <Heart className={`w-5 h-5 ${job.isFavorite ? 'text-rose-400 fill-rose-400' : 'text-emerald-400/50 hover:text-rose-400'}`} />
+                  <Eye className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Voir les détails</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openApplyModal(job);
+                  }}
+                  className={`py-2 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition-all ${
+                    job.applied 
+                      ? 'bg-emerald-950/80 border border-emerald-500/40 text-emerald-300' 
+                      : 'bg-emerald-500 text-slate-950 shadow-[0_0_12px_rgba(0,230,118,0.4)] hover:shadow-[0_0_20px_rgba(0,230,118,0.7)]'
+                  }`}
+                >
+                  {job.applied ? (
+                    <>
+                      <Check className="w-3.5 h-3.5 stroke-[3]" />
+                      <span>Postulé</span>
+                    </>
+                  ) : (
+                    <>
+                      <Send className="w-3.5 h-3.5" />
+                      <span>Postuler</span>
+                    </>
+                  )}
                 </button>
               </div>
 
-              {/* Badges strip: Contract + WorkMode */}
-              <div className="flex items-center gap-2 mt-3">
-                <span className="px-2.5 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 text-[11px] font-bold">
-                  {job.contract}
-                </span>
-                <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[11px] font-bold flex items-center gap-1">
-                  <Home className="w-3 h-3" /> {job.workMode}
-                </span>
-              </div>
-
-              {/* Description */}
-              <p className="text-xs text-emerald-200/70 mt-2.5 line-clamp-2">
-                {job.description}
-              </p>
-
-              {/* Salary & Deadline strip */}
-              <div className="mt-3.5 pt-3 border-t border-emerald-500/15 space-y-1.5 text-xs">
-                <div className="flex items-center justify-between">
-                  <span className="text-emerald-400 font-extrabold flex items-center gap-1">
-                    <DollarSign className="w-4 h-4 text-emerald-400" /> {job.salary}
-                  </span>
-                  <span className="text-[11px] text-emerald-400/60 flex items-center gap-1">
-                    <Calendar className="w-3 h-3 text-emerald-400" /> Publié : {job.postedDate}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-[11px] text-emerald-300/80">
-                  <span className="flex items-center gap-1">
-                    <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400" /> {job.rating} · {job.experience}
-                  </span>
-                  <span className="flex items-center gap-1 text-rose-300/80">
-                    <Clock className="w-3 h-3" /> Limite : {job.deadlineDate}
-                  </span>
-                </div>
-              </div>
             </div>
-
-            {/* Action Buttons: Voir les détails + Postuler */}
-            <div className="mt-4 pt-3 border-t border-emerald-500/20 grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setSelectedJobId(job.id);
-                }}
-                className="py-2 px-3 rounded-xl glass-panel-subtle text-emerald-200 hover:text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition-all"
-              >
-                <Eye className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Voir les détails</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setApplyingJob(job);
-                }}
-                className={`py-2 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition-all ${
-                  job.applied 
-                    ? 'bg-emerald-950/80 border border-emerald-500/40 text-emerald-300' 
-                    : 'bg-emerald-500 text-slate-950 shadow-[0_0_12px_rgba(0,230,118,0.4)] hover:shadow-[0_0_20px_rgba(0,230,118,0.7)]'
-                }`}
-              >
-                {job.applied ? (
-                  <>
-                    <Check className="w-3.5 h-3.5 stroke-[3]" />
-                    <span>Postulé</span>
-                  </>
-                ) : (
-                  <>
-                    <Send className="w-3.5 h-3.5" />
-                    <span>Postuler</span>
-                  </>
-                )}
-              </button>
-            </div>
-
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
 
       {/* 5. Bottom Counters: Offres enregistrées & Historique candidatures */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-6 pt-2">
         <div 
-          onClick={() => setFilterFavoriteOnly(true)}
-          className="glass-panel rounded-3xl p-4 sm:p-5 border border-emerald-500/30 flex items-center justify-between cursor-pointer hover:border-emerald-400/60 transition-all group"
+          onClick={() => {
+            setFilterFavoriteOnly(prev => !prev);
+            setFilterAppliedOnly(false);
+            topRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }}
+          className={`glass-panel rounded-3xl p-4 sm:p-5 border flex items-center justify-between cursor-pointer transition-all group ${
+            filterFavoriteOnly
+              ? 'border-rose-400/70 shadow-[0_0_20px_rgba(244,63,94,0.2)]'
+              : 'border-emerald-500/30 hover:border-emerald-400/60'
+          }`}
         >
           <div className="flex items-center gap-3.5">
             <div className="w-11 h-11 rounded-2xl bg-amber-500/20 border border-amber-400/40 text-amber-300 flex items-center justify-center shrink-0">
@@ -599,18 +814,22 @@ export const JobsScreen: React.FC = () => {
             </div>
           </div>
           <div className="flex items-center gap-1 text-xs text-emerald-300 font-bold group-hover:translate-x-1 transition-transform">
-            <span>Voir mes favoris</span>
+            <span>{filterFavoriteOnly ? 'Toutes les offres' : 'Voir mes favoris'}</span>
             <ChevronRight className="w-4 h-4" />
           </div>
         </div>
 
         <div 
           onClick={() => {
-            if (filteredJobs[0]) {
-              setSelectedJobId(filteredJobs[0].id);
-            }
+            setFilterAppliedOnly(prev => !prev);
+            setFilterFavoriteOnly(false);
+            topRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
           }}
-          className="glass-panel rounded-3xl p-4 sm:p-5 border border-emerald-500/30 flex items-center justify-between cursor-pointer hover:border-emerald-400/60 transition-all group"
+          className={`glass-panel rounded-3xl p-4 sm:p-5 border flex items-center justify-between cursor-pointer transition-all group ${
+            filterAppliedOnly
+              ? 'border-emerald-400/70 shadow-[0_0_20px_rgba(0,230,118,0.2)]'
+              : 'border-emerald-500/30 hover:border-emerald-400/60'
+          }`}
         >
           <div className="flex items-center gap-3.5">
             <div className="w-11 h-11 rounded-2xl bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 flex items-center justify-center shrink-0">
@@ -622,7 +841,7 @@ export const JobsScreen: React.FC = () => {
             </div>
           </div>
           <div className="flex items-center gap-1 text-xs text-emerald-300 font-bold group-hover:translate-x-1 transition-transform">
-            <span>Voir les offres</span>
+            <span>{filterAppliedOnly ? 'Toutes les offres' : "Voir l'historique"}</span>
             <ChevronRight className="w-4 h-4" />
           </div>
         </div>
@@ -656,15 +875,24 @@ export const JobsScreen: React.FC = () => {
                   onChange={(e) => setSelectedCv(e.target.value)}
                   className="w-full px-3 py-2.5 rounded-2xl glass-input text-sm bg-emerald-950 text-white"
                 >
-                  {profile.documents.map((d, i) => (
-                    <option key={i} value={d.name}>{d.name} ({d.type})</option>
-                  ))}
+                  {profile.documents.length === 0 ? (
+                    <option value={selectedCv || 'Mon CV.pdf'}>{selectedCv || 'Mon CV.pdf'}</option>
+                  ) : (
+                    <>
+                      {!profile.documents.some(d => d.name === selectedCv) && selectedCv && (
+                        <option value={selectedCv}>{selectedCv}</option>
+                      )}
+                      {profile.documents.map((d, i) => (
+                        <option key={d.id || i} value={d.name}>{d.name} ({d.type})</option>
+                      ))}
+                    </>
+                  )}
                 </select>
               </div>
 
               <div>
                 <label className="block text-xs font-bold uppercase tracking-wider text-emerald-300 mb-1">
-                  Note d'introduction (Optionnelle)
+                  Lettre de motivation / Note d'introduction (Optionnelle)
                 </label>
                 <textarea
                   rows={3}
@@ -692,7 +920,7 @@ export const JobsScreen: React.FC = () => {
                   type="submit"
                   className="px-5 py-2 rounded-xl bg-emerald-500 text-slate-950 font-bold text-xs shadow-[0_0_15px_rgba(0,230,118,0.5)] hover:shadow-[0_0_20px_rgba(0,230,118,0.8)]"
                 >
-                  Transmettre ma candidature
+                  {applyingJob.applied ? 'Mettre à jour la candidature' : 'Transmettre ma candidature'}
                 </button>
               </div>
             </form>

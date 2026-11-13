@@ -1,4 +1,4 @@
-import { Project, Task, Note, Job, Transaction, NotificationItem, UserProfile, ChatMessage } from '../types';
+import { Project, Task, Note, Job, Transaction, FinanceSettings, NotificationItem, UserProfile, ChatMessage } from '../types';
 
 export const initialProjects: Project[] = [
   {
@@ -365,6 +365,12 @@ export const initialTransactions: Transaction[] = [
   },
 ];
 
+export const initialFinanceSettings: FinanceSettings = {
+  monthlyBudgetMax: 2000000,
+  savingsGoalCurrent: 2000000,
+  savingsGoalTarget: 5000000,
+};
+
 export const initialNotifications: NotificationItem[] = [
   {
     id: 'notif-1',
@@ -480,15 +486,95 @@ export const initialProfile: UserProfile = {
   name: 'Jasmine Castillo',
   email: 'jasmine.castillo@email.com',
   phone: '+261 34 12 345 67',
-  address: 'Antananarivo, Madagascar',
+  address: 'Lot II M 45 Ter, Analakely',
+  city: 'Antananarivo',
+  country: 'Madagascar',
+  birthDate: '1998-05-14',
+  currentStatus: 'Freelance',
+  bio: "Passionnée par la technologie, le design produit et la création de solutions numériques adaptées aux réalités locales.",
   isPremium: true,
   avatarUrl: '/assets/images/avatar_user.jpg',
   notificationsEnabled: true,
-  documents: [
-    { name: 'Certificat.pdf', type: 'Certificat Google Cloud', size: '1.4 Mo', date: '10/01/2025' },
-    { name: 'Formation IA.pdf', type: 'Spécialisation Deep Learning', size: '2.8 Mo', date: '15/02/2025' },
-    { name: 'Mon CV.pdf', type: 'Curriculum Vitae 2025', size: '840 Ko', date: '01/04/2025' },
+  professionalProfile: {
+    title: 'Développeur Full Stack & Chef de Projet Digital',
+    objective: "Concevoir des applications web et mobiles performantes, accessibles hors-ligne et centrées sur l'utilisateur.",
+    sector: 'Technologies de l’information & Logiciels',
+    specialties: 'React, TypeScript, Node.js, SQLite, UI/UX Design',
+    desiredWorkType: 'CDI, Freelance ou Missions à distance',
+    availability: 'Disponible immédiatement',
+  },
+  experiences: [
+    {
+      id: 'exp-1',
+      company: 'Ketrika Digital Studio',
+      position: 'Développeur Full Stack Senior',
+      startDate: '2023-03',
+      endDate: 'Présent',
+      missions: "Architecture frontend/backend, conception de l'application de productivité Ketrika et gestion de la base SQLite embarquée.",
+      achievements: 'Déploiement de la version multi-écrans (Android, Tablette, PC) avec synchronisation hors-ligne 100% fiable.',
+    },
+    {
+      id: 'exp-2',
+      company: 'Madatech Solutions',
+      position: 'Développeur Web Frontend',
+      startDate: '2021-01',
+      endDate: '2023-02',
+      missions: "Développement d'interfaces React réactives, intégration d'API REST et optimisation des performances.",
+      achievements: 'Réduction de 40% du temps de chargement des tableaux de bord clients.',
+    },
   ],
+  educations: [
+    {
+      id: 'edu-1',
+      institution: 'Université d’Antananarivo / ENI',
+      degree: 'Master en Génie Logiciel et Intelligence Artificielle',
+      fieldOfStudy: 'Informatique & Systèmes d’Information',
+      startYear: '2019',
+      endYear: '2021',
+      description: 'Mémoire sur les architectures web progressives (PWA) et les bases de données embarquées.',
+    },
+    {
+      id: 'edu-2',
+      institution: 'Institut Supérieur Polytechnique de Madagascar',
+      degree: 'Licence en Informatique',
+      fieldOfStudy: 'Développement Web et Mobile',
+      startYear: '2016',
+      endYear: '2019',
+      description: 'Formation complète en algorithmique, bases de données relationnelles et développement applicatif.',
+    },
+  ],
+  skills: [
+    { id: 'sk-1', name: 'React & TypeScript', category: 'Compétences techniques', level: 'Expert' },
+    { id: 'sk-2', name: 'Node.js & Express', category: 'Compétences techniques', level: 'Avancé' },
+    { id: 'sk-3', name: 'SQLite & PostgreSQL', category: 'Compétences informatiques', level: 'Avancé' },
+    { id: 'sk-4', name: 'Figma & UI/UX Design', category: 'Compétences informatiques', level: 'Avancé' },
+    { id: 'sk-5', name: 'Gestion de projet Agile', category: 'Compétences personnelles (Soft Skills)', level: 'Avancé' },
+    { id: 'sk-6', name: 'Communication & Leadership', category: 'Compétences personnelles (Soft Skills)', level: 'Expert' },
+  ],
+  languages: [
+    { id: 'lang-1', name: 'Malagasy', level: 'Natif' },
+    { id: 'lang-2', name: 'Français', level: 'Courant' },
+    { id: 'lang-3', name: 'Anglais', level: 'Avancé' },
+  ],
+  documents: [
+    { id: 'doc-1', name: 'Mon CV 2025.pdf', type: 'Curriculum Vitae 2025', category: 'CV', size: '840 Ko', date: '01/04/2025' },
+    { id: 'doc-2', name: 'Diplôme Master.pdf', type: 'Master Génie Logiciel', category: 'Diplômes', size: '1.8 Mo', date: '20/11/2021' },
+    { id: 'doc-3', name: 'Certificat Google Cloud.pdf', type: 'Certificat Google Cloud', category: 'Certificats', size: '1.4 Mo', date: '10/01/2025' },
+    { id: 'doc-4', name: 'Formation IA.pdf', type: 'Spécialisation Deep Learning', category: 'Attestations', size: '2.8 Mo', date: '15/02/2025' },
+  ],
+  portfolioLinks: {
+    github: 'https://github.com/jasminecastillo',
+    linkedin: 'https://linkedin.com/in/jasmine-castillo',
+    portfolio: 'https://jasminecastillo.dev',
+    website: 'https://ketrika.mg',
+    projectsSummary: '• Ketrika Suite : Plateforme tout-en-un de gestion de projets, tâches et finances hors-ligne.\n• SmartVente MG : Solution de caisse et gestion de stock pour PME.\n• EcoTracker : Tableau de bord analytique pour initiatives durables.',
+  },
+  additionalInfo: {
+    interests: 'Intelligence artificielle, entrepreneuriat numérique, innovation sociale, architecture logicielle',
+    hobbies: 'Photographie, randonnée, lecture tech, musique acoustique',
+    personalQualities: 'Rigueur, créativité, autonomie, esprit d’équipe, curiosité intellectuelle',
+    references: 'Disponible sur demande — Directrice Technique chez Madatech Solutions',
+  },
 };
 
 export const initialChatMessages: ChatMessage[] = [

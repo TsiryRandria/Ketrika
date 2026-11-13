@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
+import { ProfileInfoPage } from './ProfileInfoPage';
 import { 
   Settings, 
   Crown, 
@@ -41,8 +42,18 @@ export const SettingsScreen: React.FC = () => {
     isDbReady,
     exportSqliteDb,
     importSqliteDb,
-    getDbStats
+    getDbStats,
+    setIsEditingProfileInfo
   } = useApp();
+
+  const [showInfoPage, setShowInfoPage] = useState(false);
+
+  useEffect(() => {
+    setIsEditingProfileInfo(showInfoPage);
+    return () => {
+      setIsEditingProfileInfo(false);
+    };
+  }, [showInfoPage, setIsEditingProfileInfo]);
 
   const [showEditProfileModal, setShowEditProfileModal] = useState(false);
   const [showAddDocModal, setShowAddDocModal] = useState(false);
@@ -79,6 +90,10 @@ export const SettingsScreen: React.FC = () => {
     setShowAddDocModal(false);
   };
 
+  if (showInfoPage) {
+    return <ProfileInfoPage onBack={() => setShowInfoPage(false)} />;
+  }
+
   return (
     <div className="space-y-4 sm:space-y-6 pb-28 md:pb-8 animate-in fade-in duration-200 max-w-4xl mx-auto">
       
@@ -108,12 +123,6 @@ export const SettingsScreen: React.FC = () => {
           </div>
 
           <div>
-            {/* Utilisateur Premium Badge */}
-            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-gradient-to-r from-amber-500/30 to-amber-400/10 text-amber-300 border border-amber-400/50 text-[11px] font-bold shadow-[0_0_10px_rgba(245,158,11,0.3)] mb-1.5">
-              <Crown className="w-3.5 h-3.5 fill-current" />
-              <span>Utilisateur Premium</span>
-            </div>
-
             <h2 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight">
               {profile.name}
             </h2>
@@ -124,83 +133,11 @@ export const SettingsScreen: React.FC = () => {
         </div>
 
         <button 
-          onClick={() => setShowEditProfileModal(true)}
+          onClick={() => setShowInfoPage(true)}
           className="p-2 text-emerald-400/70 hover:text-white group-hover:translate-x-1 transition-transform"
+          title="Ouvrir la page Information"
         >
           <ChevronRight className="w-6 h-6" />
-        </button>
-      </div>
-
-      {/* 3. Informations personnelles (Matching page 9) */}
-      <div className="glass-panel rounded-3xl p-5 sm:p-6 border border-emerald-500/30 space-y-4">
-        <div>
-          <h3 className="font-bold text-white text-base">Informations personnelles</h3>
-          <p className="text-xs text-emerald-200/70 mt-0.5">Gérez vos informations de base</p>
-        </div>
-
-        <div className="space-y-3 pt-2 text-xs text-emerald-100">
-          <div className="flex items-center justify-between p-3 rounded-2xl bg-emerald-950/50 border border-emerald-500/20">
-            <span className="flex items-center gap-2 text-emerald-300/80">
-              <Phone className="w-4 h-4 text-emerald-400" /> Téléphone
-            </span>
-            <span className="font-bold text-white tracking-wide">{profile.phone}</span>
-          </div>
-
-          <div className="flex items-center justify-between p-3 rounded-2xl bg-emerald-950/50 border border-emerald-500/20">
-            <span className="flex items-center gap-2 text-emerald-300/80">
-              <Mail className="w-4 h-4 text-emerald-400" /> Email
-            </span>
-            <span className="font-bold text-white">{profile.email}</span>
-          </div>
-
-          <div className="flex items-center justify-between p-3 rounded-2xl bg-emerald-950/50 border border-emerald-500/20">
-            <span className="flex items-center gap-2 text-emerald-300/80">
-              <MapPin className="w-4 h-4 text-emerald-400" /> Adresse
-            </span>
-            <span className="font-bold text-white">{profile.address}</span>
-          </div>
-        </div>
-
-        <button
-          onClick={() => setShowEditProfileModal(true)}
-          className="w-full py-3 rounded-2xl bg-emerald-500/25 border border-emerald-400/40 text-emerald-200 hover:text-white hover:bg-emerald-500/40 font-bold text-xs transition-all flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(16,185,129,0.2)]"
-        >
-          <Edit3 className="w-4 h-4 text-emerald-300" />
-          <span>Modifier mes informations</span>
-          <ChevronRight className="w-4 h-4 ml-1" />
-        </button>
-      </div>
-
-      {/* 4. Mes formations & Certificats (Matching page 9) */}
-      <div className="glass-panel rounded-3xl p-5 sm:p-6 border border-emerald-500/30 space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="font-bold text-white text-base">Mes formations &amp; Certificats</h3>
-            <p className="text-xs text-emerald-200/70 mt-0.5">Ajoutez vos diplômes, formations ou CV</p>
-          </div>
-          <GraduationCap className="w-5 h-5 text-emerald-400" />
-        </div>
-
-        {/* Document Badges Strip */}
-        <div className="flex flex-wrap items-center gap-2.5 pt-1">
-          {profile.documents.map((doc, idx) => (
-            <div
-              key={idx}
-              onClick={() => alert(`Document : ${doc.name} (${doc.type}) - ${doc.size}`)}
-              className="px-3.5 py-2 rounded-2xl glass-panel-subtle border border-emerald-500/30 hover:border-emerald-400 text-xs font-semibold text-emerald-200 flex items-center gap-2 cursor-pointer transition-all"
-            >
-              <FileText className="w-4 h-4 text-rose-400" />
-              <span>{doc.name}</span>
-            </div>
-          ))}
-        </div>
-
-        <button
-          onClick={() => setShowAddDocModal(true)}
-          className="w-full py-2.5 rounded-2xl glass-panel-subtle border border-emerald-500/30 hover:border-emerald-400 text-emerald-300 font-bold text-xs flex items-center justify-center gap-1.5 transition-all"
-        >
-          <Plus className="w-4 h-4 stroke-[3]" />
-          <span>Ajouter un document</span>
         </button>
       </div>
 

@@ -32,21 +32,25 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenQuickCreate }) => {
     notifications,
     markNotificationRead,
     isEditingNote,
+    isEditingTask,
     isProjectDetailOpen,
-    isJobDetailOpen
+    isJobDetailOpen,
+    isEditingProfileInfo
   } = useApp();
-
-  // Hide top header exclusively on note detail, project detail, and job detail screens
-  if (
-    (currentTab === 'notes' && isEditingNote) || 
-    (currentTab === 'projets' && isProjectDetailOpen) ||
-    (currentTab === 'emplois' && isJobDetailOpen)
-  ) {
-    return null;
-  }
 
   const [showNotifDropdown, setShowNotifDropdown] = useState(false);
   const [globalSearch, setGlobalSearch] = useState('');
+
+  // Hide top header exclusively on note detail, task edit, project detail, job detail, and profile info screens
+  if (
+    (currentTab === 'notes' && isEditingNote) || 
+    (currentTab === 'taches' && isEditingTask) ||
+    (currentTab === 'projets' && isProjectDetailOpen) ||
+    (currentTab === 'emplois' && isJobDetailOpen) ||
+    (currentTab === 'parametres' && isEditingProfileInfo)
+  ) {
+    return null;
+  }
 
   const isSubScreen = ['parametres', 'notifications'].includes(currentTab);
 

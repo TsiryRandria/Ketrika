@@ -42,6 +42,7 @@ export interface Task {
   priority: 'Haute' | 'Moyenne' | 'Basse';
   status: 'À faire' | 'En cours' | 'Terminée';
   projectTitle: string;
+  startDate?: string;
   dueDate: string;
   dueTime: string;
   createdAt: string;
@@ -77,6 +78,9 @@ export interface Job {
   isFavorite: boolean;
   logo: string;
   applied?: boolean;
+  appliedCv?: string;
+  appliedCoverNote?: string;
+  appliedAt?: string;
   postedDate: string;
   deadlineDate: string;
 }
@@ -91,6 +95,12 @@ export interface Transaction {
   source: string;
 }
 
+export interface FinanceSettings {
+  monthlyBudgetMax: number;
+  savingsGoalCurrent: number;
+  savingsGoalTarget: number;
+}
+
 export interface NotificationItem {
   id: string;
   title: string;
@@ -101,6 +111,49 @@ export interface NotificationItem {
   isRecent: boolean;
 }
 
+export interface ProfileExperience {
+  id: string;
+  company: string;
+  position: string;
+  startDate: string;
+  endDate: string;
+  missions: string;
+  achievements: string;
+}
+
+export interface ProfileEducation {
+  id: string;
+  institution: string;
+  degree: string;
+  fieldOfStudy: string;
+  startYear: string;
+  endYear: string;
+  description: string;
+}
+
+export interface ProfileSkill {
+  id: string;
+  name: string;
+  category: 'Compétences techniques' | 'Compétences informatiques' | 'Compétences personnelles (Soft Skills)';
+  level: 'Débutant' | 'Intermédiaire' | 'Avancé' | 'Expert';
+}
+
+export interface ProfileLanguage {
+  id: string;
+  name: string;
+  level: 'Débutant' | 'Intermédiaire' | 'Avancé' | 'Courant' | 'Natif';
+}
+
+export interface ProfileDocument {
+  id?: string;
+  name: string;
+  type: string;
+  category?: 'CV' | 'Diplômes' | 'Certificats' | 'Attestations' | 'Lettres de motivation' | 'Autres documents professionnels';
+  size: string;
+  date: string;
+  dataUrl?: string;
+}
+
 export interface UserProfile {
   name: string;
   email: string;
@@ -108,8 +161,54 @@ export interface UserProfile {
   address: string;
   isPremium: boolean;
   avatarUrl: string;
-  documents: { name: string; type: string; size: string; date: string }[];
+  documents: ProfileDocument[];
   notificationsEnabled: boolean;
+
+  // 1. Informations personnelles complémentaires
+  birthDate?: string;
+  city?: string;
+  country?: string;
+  currentStatus?: string;
+  bio?: string;
+
+  // 2. Profil professionnel
+  professionalProfile?: {
+    title: string;
+    objective: string;
+    sector: string;
+    specialties: string;
+    desiredWorkType: string;
+    availability: string;
+  };
+
+  // 3. Expériences professionnelles
+  experiences?: ProfileExperience[];
+
+  // 4. Formations et études
+  educations?: ProfileEducation[];
+
+  // 5. Compétences
+  skills?: ProfileSkill[];
+
+  // 6. Langues
+  languages?: ProfileLanguage[];
+
+  // 8. Portfolio et liens professionnels
+  portfolioLinks?: {
+    github: string;
+    linkedin: string;
+    portfolio: string;
+    website: string;
+    projectsSummary: string;
+  };
+
+  // 9. Informations complémentaires
+  additionalInfo?: {
+    interests: string;
+    hobbies: string;
+    personalQualities: string;
+    references: string;
+  };
 }
 
 export interface ChatMessage {

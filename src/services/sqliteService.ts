@@ -5,6 +5,7 @@ import {
   Note, 
   Job, 
   Transaction, 
+  FinanceSettings,
   NotificationItem, 
   UserProfile, 
   ChatMessage 
@@ -15,6 +16,7 @@ import {
   initialNotes, 
   initialJobs, 
   initialTransactions, 
+  initialFinanceSettings,
   initialNotifications, 
   initialProfile, 
   initialChatMessages 
@@ -65,6 +67,8 @@ class SQLiteService {
   private isPersisting = false;
   private pendingPersist = false;
   private writeQueuePromise: Promise<void> = Promise.resolve();
+  private operationQueue: Promise<void> = Promise.resolve();
+  private lastSortTimestamp = 0;
 
   constructor() {
     // Flush persistence on page close / app pause in Android
@@ -78,9 +82,39 @@ class SQLiteService {
     }
   }
 
+  isDatabaseReady(): boolean {
+    return this.isInitialized && this.db !== null;
+  }
+
+  async ensureReady(): Promise<void> {
+    await this.init();
+  }
+
+  async waitForPendingOperations(): Promise<void> {
+    await this.ensureReady();
+    let currentQueue = this.operationQueue;
+    while (true) {
+      await currentQueue;
+      if (this.operationQueue === currentQueue) break;
+      currentQueue = this.operationQueue;
+    }
+  }
+
+  private enqueueOperation<T>(task: () => Promise<T> | T): Promise<T> {
+    const next = this.operationQueue.then(async () => {
+      await this.ensureReady();
+      return task();
+    });
+    this.operationQueue = next.then(
+      () => undefined,
+      () => undefined
+    );
+    return next;
+  }
+
   // Initialize SQLite Database with persistence, integrity verification and fallback
   async init(): Promise<void> {
-    if (this.isInitialized) return;
+    if (this.isInitialized && this.db) return;
     if (this.initPromise) return this.initPromise;
 
     this.initPromise = (async () => {
@@ -122,11 +156,11 @@ class SQLiteService {
         // Configure performance and safety pragmas
         this.configurePragmas();
 
-        // 3. Ensure schema and all columns exist
-        this.ensureSchemaIntegrity();
+        // 3. Ensure schema, incremental migrations & chronological sort_order atomically
+        this.ensureSchemaAndMigrateSync(this.db);
 
         // 4. Migrate any pre-existing localStorage records if migration not yet flagged
-        await this.runSafeMigration();
+        this.runSafeMigrationSync();
 
         // 5. Initial persist
         await this.persistImmediately();
@@ -137,10 +171,14 @@ class SQLiteService {
         if (this.SQL && !this.db) {
           this.db = new this.SQL.Database();
           this.configurePragmas();
-          this.ensureSchemaIntegrity();
-          await this.runSafeMigration();
+          this.ensureSchemaAndMigrateSync(this.db);
+          this.runSafeMigrationSync();
         }
-        this.isInitialized = true;
+        this.isInitialized = Boolean(this.db);
+      } finally {
+        if (!this.isInitialized) {
+          this.initPromise = null;
+        }
       }
     })();
 
@@ -242,131 +280,259 @@ class SQLiteService {
     return freshDb;
   }
 
-  // Create tables and guarantee column integrity
-  private ensureSchemaIntegrity() {
-    if (!this.db) return;
-
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS meta_info (
-        key TEXT PRIMARY KEY,
-        value TEXT
-      );
-
-      CREATE TABLE IF NOT EXISTS projects (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        description TEXT,
-        startDate TEXT,
-        endDate TEXT,
-        priority TEXT,
-        status TEXT,
-        progress INTEGER,
-        category TEXT,
-        image TEXT,
-        isArchived INTEGER DEFAULT 0,
-        tasks_json TEXT
-      );
-
-      CREATE TABLE IF NOT EXISTS tasks (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        description TEXT,
-        category TEXT,
-        priority TEXT,
-        status TEXT,
-        projectTitle TEXT,
-        dueDate TEXT,
-        dueTime TEXT,
-        createdAt TEXT,
-        completed INTEGER DEFAULT 0,
-        isOverdue INTEGER DEFAULT 0
-      );
-
-      CREATE TABLE IF NOT EXISTS notes (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        content TEXT,
-        isFavorite INTEGER DEFAULT 0,
-        isPinned INTEGER DEFAULT 0,
-        isArchived INTEGER DEFAULT 0,
-        createdAt TEXT,
-        updatedAt TEXT,
-        category TEXT,
-        image TEXT,
-        checklist_json TEXT
-      );
-
-      CREATE TABLE IF NOT EXISTS jobs (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        company TEXT,
-        location TEXT,
-        salary TEXT,
-        contract TEXT,
-        workMode TEXT,
-        rating REAL,
-        experience TEXT,
-        description TEXT,
-        isFavorite INTEGER DEFAULT 0,
-        logo TEXT,
-        applied INTEGER DEFAULT 0,
-        postedDate TEXT,
-        deadlineDate TEXT
-      );
-
-      CREATE TABLE IF NOT EXISTS transactions (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        type TEXT,
-        category TEXT,
-        amount REAL,
-        date TEXT,
-        source TEXT
-      );
-
-      CREATE TABLE IF NOT EXISTS notifications (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        description TEXT,
-        category TEXT,
-        time TEXT,
-        isRead INTEGER DEFAULT 0,
-        isRecent INTEGER DEFAULT 0
-      );
-
-      CREATE TABLE IF NOT EXISTS user_profile (
-        id TEXT PRIMARY KEY,
-        name TEXT,
-        email TEXT,
-        phone TEXT,
-        address TEXT,
-        isPremium INTEGER DEFAULT 1,
-        avatarUrl TEXT,
-        notificationsEnabled INTEGER DEFAULT 1,
-        documents_json TEXT
-      );
-
-      CREATE TABLE IF NOT EXISTS chat_messages (
-        id TEXT PRIMARY KEY,
-        role TEXT,
-        text TEXT,
-        timestamp TEXT,
-        attachment TEXT
-      );
-    `);
-  }
-
-  // Safe migration from localStorage to SQLite
-  private async runSafeMigration() {
-    if (!this.db) return;
-
+  private getTableColumns(targetDb: Database, tableName: string): Set<string> {
+    const cols = new Set<string>();
     try {
-      const metaRes = this.db.exec("SELECT value FROM meta_info WHERE key = 'migration_status'");
-      if (metaRes.length > 0 && metaRes[0].values.length > 0) {
-        return; // Already migrated
+      const res = targetDb.exec(`PRAGMA table_info(${tableName});`);
+      if (res.length > 0 && res[0].values) {
+        const nameIdx = res[0].columns.indexOf('name');
+        const idx = nameIdx >= 0 ? nameIdx : 1;
+        for (const row of res[0].values) {
+          if (row[idx]) cols.add(String(row[idx]));
+        }
       }
     } catch {
-      // Continue
+      // Table may not exist yet
+    }
+    return cols;
+  }
+
+  private computeSortOrder(id: string, ascending = false, fallbackOrder?: number, enforceMonotonic = false): number {
+    const match = /-(\d+)$/.exec(id || '');
+    if (match) {
+      const num = Number(match[1]);
+      if (Number.isFinite(num)) {
+        if (num >= 1_000_000_000) {
+          if (enforceMonotonic) {
+            const mono = Math.max(num, this.lastSortTimestamp + 1);
+            this.lastSortTimestamp = mono;
+            return mono;
+          }
+          if (num > this.lastSortTimestamp) this.lastSortTimestamp = num;
+          return num;
+        }
+        // Seed items (e.g. task-1..task-7, notif-1..notif-12):
+        // Descending feeds: smaller number = newer (1_000_000 - num), always < any real Date.now() timestamp.
+        // Ascending logs (chat): smaller number = older (num), always < any real Date.now() timestamp.
+        return ascending ? num : 1_000_000 - num;
+      }
+    }
+    if (fallbackOrder !== undefined && Number.isFinite(fallbackOrder)) {
+      return fallbackOrder;
+    }
+    const nextTs = Math.max(Date.now(), this.lastSortTimestamp + 1);
+    this.lastSortTimestamp = nextTs;
+    return nextTs;
+  }
+
+  private backfillSortOrderForTable(targetDb: Database, tableName: string, ascending = false) {
+    try {
+      const res = targetDb.exec(
+        `SELECT rowid, id, sort_order FROM ${tableName} WHERE sort_order IS NULL OR sort_order = 0`
+      );
+      if (res.length === 0 || !res[0].values) return;
+      for (const row of res[0].values) {
+        const rowId = Number(row[0] || 0);
+        const id = String(row[1] || '');
+        const fallback = ascending ? rowId : 1_000_000 + rowId;
+        const computed = this.computeSortOrder(id, ascending, fallback, false);
+        targetDb.run(`UPDATE ${tableName} SET sort_order = ? WHERE id = ?`, [computed, id]);
+      }
+    } catch (e) {
+      console.warn(`[Ketrika SQLite] Backfill sort_order notice (${tableName}):`, e);
+    }
+  }
+
+  // Create tables, apply versioned column upgrades & backfill sort_order inside an atomic savepoint
+  private ensureSchemaAndMigrateSync(targetDb: Database) {
+    this.runInTransactionOn(targetDb, () => {
+      targetDb.run(`
+        CREATE TABLE IF NOT EXISTS meta_info (
+          key TEXT PRIMARY KEY,
+          value TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS projects (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          description TEXT,
+          startDate TEXT,
+          endDate TEXT,
+          priority TEXT,
+          status TEXT,
+          progress INTEGER,
+          category TEXT,
+          image TEXT,
+          isArchived INTEGER DEFAULT 0,
+          tasks_json TEXT,
+          sort_order INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS tasks (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          description TEXT,
+          category TEXT,
+          priority TEXT,
+          status TEXT,
+          projectTitle TEXT,
+          startDate TEXT,
+          dueDate TEXT,
+          dueTime TEXT,
+          createdAt TEXT,
+          completed INTEGER DEFAULT 0,
+          isOverdue INTEGER DEFAULT 0,
+          sort_order INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS notes (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          content TEXT,
+          isFavorite INTEGER DEFAULT 0,
+          isPinned INTEGER DEFAULT 0,
+          isArchived INTEGER DEFAULT 0,
+          createdAt TEXT,
+          updatedAt TEXT,
+          category TEXT,
+          image TEXT,
+          checklist_json TEXT,
+          sort_order INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS jobs (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          company TEXT,
+          location TEXT,
+          salary TEXT,
+          contract TEXT,
+          workMode TEXT,
+          rating REAL,
+          experience TEXT,
+          description TEXT,
+          isFavorite INTEGER DEFAULT 0,
+          logo TEXT,
+          applied INTEGER DEFAULT 0,
+          appliedCv TEXT,
+          appliedCoverNote TEXT,
+          appliedAt TEXT,
+          postedDate TEXT,
+          deadlineDate TEXT,
+          sort_order INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS transactions (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          type TEXT,
+          category TEXT,
+          amount REAL,
+          date TEXT,
+          source TEXT,
+          sort_order INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS notifications (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          description TEXT,
+          category TEXT,
+          time TEXT,
+          isRead INTEGER DEFAULT 0,
+          isRecent INTEGER DEFAULT 0,
+          sort_order INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS user_profile (
+          id TEXT PRIMARY KEY,
+          name TEXT,
+          email TEXT,
+          phone TEXT,
+          address TEXT,
+          isPremium INTEGER DEFAULT 1,
+          avatarUrl TEXT,
+          notificationsEnabled INTEGER DEFAULT 1,
+          documents_json TEXT,
+          extended_json TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS chat_messages (
+          id TEXT PRIMARY KEY,
+          role TEXT,
+          text TEXT,
+          timestamp TEXT,
+          attachment TEXT,
+          sort_order INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS finance_settings (
+          id TEXT PRIMARY KEY,
+          monthlyBudgetMax REAL,
+          savingsGoalCurrent REAL,
+          savingsGoalTarget REAL
+        );
+      `);
+
+      const taskCols = this.getTableColumns(targetDb, 'tasks');
+      if (!taskCols.has('startDate')) {
+        targetDb.run("ALTER TABLE tasks ADD COLUMN startDate TEXT");
+      }
+
+      const profileCols = this.getTableColumns(targetDb, 'user_profile');
+      if (!profileCols.has('extended_json')) {
+        targetDb.run("ALTER TABLE user_profile ADD COLUMN extended_json TEXT");
+      }
+
+      const jobCols = this.getTableColumns(targetDb, 'jobs');
+      if (!jobCols.has('appliedCv')) {
+        targetDb.run("ALTER TABLE jobs ADD COLUMN appliedCv TEXT");
+      }
+      if (!jobCols.has('appliedCoverNote')) {
+        targetDb.run("ALTER TABLE jobs ADD COLUMN appliedCoverNote TEXT");
+      }
+      if (!jobCols.has('appliedAt')) {
+        targetDb.run("ALTER TABLE jobs ADD COLUMN appliedAt TEXT");
+      }
+
+      const sortableTables: { name: string; ascending: boolean }[] = [
+        { name: 'projects', ascending: false },
+        { name: 'tasks', ascending: false },
+        { name: 'notes', ascending: false },
+        { name: 'jobs', ascending: false },
+        { name: 'transactions', ascending: false },
+        { name: 'notifications', ascending: false },
+        { name: 'chat_messages', ascending: true },
+      ];
+
+      for (const tbl of sortableTables) {
+        const cols = this.getTableColumns(targetDb, tbl.name);
+        if (!cols.has('sort_order')) {
+          targetDb.run(`ALTER TABLE ${tbl.name} ADD COLUMN sort_order INTEGER`);
+        }
+        this.backfillSortOrderForTable(targetDb, tbl.name, tbl.ascending);
+        targetDb.run(`CREATE INDEX IF NOT EXISTS idx_${tbl.name}_sort_order ON ${tbl.name}(sort_order)`);
+      }
+
+      targetDb.run(
+        "INSERT OR REPLACE INTO meta_info (key, value) VALUES ('schema_version', '3')"
+      );
+    });
+  }
+
+  // Safe synchronous migration from localStorage / initialData into SQLite
+  private runSafeMigrationSync(forceInitialDefaults = false) {
+    if (!this.db) return;
+
+    if (!forceInitialDefaults) {
+      try {
+        const metaRes = this.db.exec("SELECT value FROM meta_info WHERE key = 'migration_status'");
+        if (metaRes.length > 0 && metaRes[0].values.length > 0) {
+          return; // Already migrated
+        }
+      } catch {
+        // Continue
+      }
     }
 
     console.log('[Ketrika SQLite] Executing safe migration into SQLite...');
@@ -374,92 +540,118 @@ class SQLiteService {
     this.runInTransaction(() => {
       // 1. Projects
       let projectsToSave: Project[] = initialProjects;
-      try {
-        const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_projects`);
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed) && parsed.length > 0) projectsToSave = parsed;
-        }
-      } catch { projectsToSave = initialProjects; }
+      if (!forceInitialDefaults) {
+        try {
+          const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_projects`);
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            if (Array.isArray(parsed) && parsed.length > 0) projectsToSave = parsed;
+          }
+        } catch { projectsToSave = initialProjects; }
+      }
       for (const p of projectsToSave) this.saveProjectSync(p);
 
       // 2. Tasks
       let tasksToSave: Task[] = initialTasks;
-      try {
-        const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_tasks`);
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed) && parsed.length > 0) tasksToSave = parsed;
-        }
-      } catch { tasksToSave = initialTasks; }
+      if (!forceInitialDefaults) {
+        try {
+          const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_tasks`);
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            if (Array.isArray(parsed) && parsed.length > 0) tasksToSave = parsed;
+          }
+        } catch { tasksToSave = initialTasks; }
+      }
       for (const t of tasksToSave) this.saveTaskSync(t);
 
       // 3. Notes
       let notesToSave: Note[] = initialNotes;
-      try {
-        const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_notes`);
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed) && parsed.length > 0) notesToSave = parsed;
-        }
-      } catch { notesToSave = initialNotes; }
+      if (!forceInitialDefaults) {
+        try {
+          const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_notes`);
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            if (Array.isArray(parsed) && parsed.length > 0) notesToSave = parsed;
+          }
+        } catch { notesToSave = initialNotes; }
+      }
       for (const n of notesToSave) this.saveNoteSync(n);
 
       // 4. Jobs
       let jobsToSave: Job[] = initialJobs;
-      try {
-        const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_jobs`);
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed) && parsed.length > 0) jobsToSave = parsed;
-        }
-      } catch { jobsToSave = initialJobs; }
+      if (!forceInitialDefaults) {
+        try {
+          const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_jobs`);
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            if (Array.isArray(parsed) && parsed.length > 0) jobsToSave = parsed;
+          }
+        } catch { jobsToSave = initialJobs; }
+      }
       for (const j of jobsToSave) this.saveJobSync(j);
 
       // 5. Transactions
       let txToSave: Transaction[] = initialTransactions;
-      try {
-        const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_transactions`);
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed) && parsed.length > 0) txToSave = parsed;
-        }
-      } catch { txToSave = initialTransactions; }
+      if (!forceInitialDefaults) {
+        try {
+          const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_transactions`);
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            if (Array.isArray(parsed) && parsed.length > 0) txToSave = parsed;
+          }
+        } catch { txToSave = initialTransactions; }
+      }
       for (const tx of txToSave) this.saveTransactionSync(tx);
 
       // 6. Notifications
       let notifsToSave: NotificationItem[] = initialNotifications;
-      try {
-        const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_notifications`);
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed) && parsed.length > 0) notifsToSave = parsed;
-        }
-      } catch { notifsToSave = initialNotifications; }
+      if (!forceInitialDefaults) {
+        try {
+          const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_notifications`);
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            if (Array.isArray(parsed) && parsed.length > 0) notifsToSave = parsed;
+          }
+        } catch { notifsToSave = initialNotifications; }
+      }
       for (const notif of notifsToSave) this.saveNotificationSync(notif);
 
       // 7. Profile
       let profileToSave: UserProfile = initialProfile;
-      try {
-        const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_profile`);
-        if (saved) profileToSave = { ...initialProfile, ...JSON.parse(saved) };
-      } catch { profileToSave = initialProfile; }
+      if (!forceInitialDefaults) {
+        try {
+          const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_profile`);
+          if (saved) profileToSave = { ...initialProfile, ...JSON.parse(saved) };
+        } catch { profileToSave = initialProfile; }
+      }
       this.saveProfileSync(profileToSave);
 
       // 8. Chat
       let chatToSave: ChatMessage[] = initialChatMessages;
-      try {
-        const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_chat`);
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed) && parsed.length > 0) chatToSave = parsed;
-        }
-      } catch { chatToSave = initialChatMessages; }
+      if (!forceInitialDefaults) {
+        try {
+          const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_chat`);
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            if (Array.isArray(parsed) && parsed.length > 0) chatToSave = parsed;
+          }
+        } catch { chatToSave = initialChatMessages; }
+      }
       for (const msg of chatToSave) this.saveChatMessageSync(msg);
+
+      // 9. Finance Settings
+      let financeToSave: FinanceSettings = initialFinanceSettings;
+      if (!forceInitialDefaults) {
+        try {
+          const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_finance_settings`);
+          if (saved) financeToSave = { ...initialFinanceSettings, ...JSON.parse(saved) };
+        } catch { financeToSave = initialFinanceSettings; }
+      }
+      this.saveFinanceSettingsSync(financeToSave);
 
       // Mark migration done
       this.db!.run(
-        "INSERT OR REPLACE INTO meta_info (key, value) VALUES ('migration_status', 'completed_securely'), ('engine', 'sqlite-3.x-wasm'), ('migrated_at', ?)",
+        "INSERT OR REPLACE INTO meta_info (key, value) VALUES ('migration_status', 'completed_securely'), ('engine', 'sqlite-3.x-wasm'), ('schema_version', '2'), ('migrated_at', ?)",
         [new Date().toISOString()]
       );
     });
@@ -467,23 +659,27 @@ class SQLiteService {
     console.log('[Ketrika SQLite] Migration transaction committed successfully.');
   }
 
-  // Execute an action wrapped in an SQLite Savepoint (Atomic Rollback on Error)
-  private runInTransaction<T>(action: () => T): T {
-    if (!this.db) throw new Error("SQLite database not initialized");
-    const savepoint = `sp_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+  private runInTransactionOn<T>(targetDb: Database, action: () => T): T {
+    const savepoint = `sp_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
     try {
-      this.db.run(`SAVEPOINT ${savepoint};`);
+      targetDb.run(`SAVEPOINT ${savepoint};`);
       const result = action();
-      this.db.run(`RELEASE SAVEPOINT ${savepoint};`);
+      targetDb.run(`RELEASE SAVEPOINT ${savepoint};`);
       return result;
     } catch (err) {
       try {
-        this.db.run(`ROLLBACK TO SAVEPOINT ${savepoint};`);
+        targetDb.run(`ROLLBACK TO SAVEPOINT ${savepoint};`);
       } catch (rollbackErr) {
         console.error('[Ketrika SQLite] Rollback failure:', rollbackErr);
       }
       throw err;
     }
+  }
+
+  // Execute an action wrapped in an SQLite Savepoint (Atomic Rollback on Error)
+  private runInTransaction<T>(action: () => T): T {
+    if (!this.db) throw new Error("SQLite database not initialized");
+    return this.runInTransactionOn(this.db, action);
   }
 
   // --- Safe Asynchronous Debounced Persistence with Serialization ---
@@ -546,15 +742,16 @@ class SQLiteService {
   }
 
   private flushPersistence() {
+    if (!this.db || !this.isInitialized) return;
     if (this.persistDebounceTimer) {
       clearTimeout(this.persistDebounceTimer);
       this.persistDebounceTimer = null;
     }
-    this.persistImmediately();
+    void this.enqueuePersistTask();
   }
 
   private flushPersistenceSync() {
-    if (!this.db) return;
+    if (!this.db || !this.isInitialized) return;
     try {
       const binary = this.db.export();
       if (isValidSqliteBinary(binary)) {
@@ -619,10 +816,11 @@ class SQLiteService {
 
   private saveProjectSync(p: Project) {
     if (!this.db) return;
+    const sortOrder = this.computeSortOrder(p.id, false, undefined, true);
     this.db.run(
       `INSERT OR REPLACE INTO projects 
-       (id, title, description, startDate, endDate, priority, status, progress, category, image, isArchived, tasks_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, title, description, startDate, endDate, priority, status, progress, category, image, isArchived, tasks_json, sort_order)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT sort_order FROM projects WHERE id = ?), ?))`,
       [
         p.id,
         p.title,
@@ -635,17 +833,20 @@ class SQLiteService {
         p.category || 'Général',
         p.image || '',
         p.isArchived ? 1 : 0,
-        JSON.stringify(Array.isArray(p.tasks) ? p.tasks : [])
+        JSON.stringify(Array.isArray(p.tasks) ? p.tasks : []),
+        p.id,
+        sortOrder
       ]
     );
   }
 
   private saveTaskSync(t: Task) {
     if (!this.db) return;
+    const sortOrder = this.computeSortOrder(t.id, false, undefined, true);
     this.db.run(
       `INSERT OR REPLACE INTO tasks
-       (id, title, description, category, priority, status, projectTitle, dueDate, dueTime, createdAt, completed, isOverdue)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, title, description, category, priority, status, projectTitle, startDate, dueDate, dueTime, createdAt, completed, isOverdue, sort_order)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT sort_order FROM tasks WHERE id = ?), ?))`,
       [
         t.id,
         t.title,
@@ -654,21 +855,25 @@ class SQLiteService {
         t.priority || 'Moyenne',
         t.status || 'À faire',
         t.projectTitle || '',
+        t.startDate || t.createdAt || '',
         t.dueDate || '',
         t.dueTime || '',
         t.createdAt || '',
         t.completed ? 1 : 0,
-        t.isOverdue ? 1 : 0
+        t.isOverdue ? 1 : 0,
+        t.id,
+        sortOrder
       ]
     );
   }
 
   private saveNoteSync(n: Note) {
     if (!this.db) return;
+    const sortOrder = this.computeSortOrder(n.id, false, undefined, true);
     this.db.run(
       `INSERT OR REPLACE INTO notes
-       (id, title, content, isFavorite, isPinned, isArchived, createdAt, updatedAt, category, image, checklist_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, title, content, isFavorite, isPinned, isArchived, createdAt, updatedAt, category, image, checklist_json, sort_order)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT sort_order FROM notes WHERE id = ?), ?))`,
       [
         n.id,
         n.title,
@@ -680,17 +885,20 @@ class SQLiteService {
         n.updatedAt || '',
         n.category || 'Personnel',
         n.image || '',
-        JSON.stringify(Array.isArray(n.checklist) ? n.checklist : [])
+        JSON.stringify(Array.isArray(n.checklist) ? n.checklist : []),
+        n.id,
+        sortOrder
       ]
     );
   }
 
   private saveJobSync(j: Job) {
     if (!this.db) return;
+    const sortOrder = this.computeSortOrder(j.id, false, undefined, true);
     this.db.run(
       `INSERT OR REPLACE INTO jobs
-       (id, title, company, location, salary, contract, workMode, rating, experience, description, isFavorite, logo, applied, postedDate, deadlineDate)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, title, company, location, salary, contract, workMode, rating, experience, description, isFavorite, logo, applied, appliedCv, appliedCoverNote, appliedAt, postedDate, deadlineDate, sort_order)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT sort_order FROM jobs WHERE id = ?), ?))`,
       [
         j.id,
         j.title,
@@ -705,18 +913,24 @@ class SQLiteService {
         j.isFavorite ? 1 : 0,
         j.logo || '',
         j.applied ? 1 : 0,
+        j.appliedCv || '',
+        j.appliedCoverNote || '',
+        j.appliedAt || '',
         j.postedDate || '',
-        j.deadlineDate || ''
+        j.deadlineDate || '',
+        j.id,
+        sortOrder
       ]
     );
   }
 
   private saveTransactionSync(tx: Transaction) {
     if (!this.db) return;
+    const sortOrder = this.computeSortOrder(tx.id, false, undefined, true);
     this.db.run(
       `INSERT OR REPLACE INTO transactions
-       (id, title, type, category, amount, date, source)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       (id, title, type, category, amount, date, source, sort_order)
+       VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT sort_order FROM transactions WHERE id = ?), ?))`,
       [
         tx.id,
         tx.title,
@@ -724,17 +938,20 @@ class SQLiteService {
         tx.category || 'Divers',
         Number(tx.amount || 0),
         tx.date || '',
-        tx.source || 'Espèces'
+        tx.source || 'Espèces',
+        tx.id,
+        sortOrder
       ]
     );
   }
 
   private saveNotificationSync(n: NotificationItem) {
     if (!this.db) return;
+    const sortOrder = this.computeSortOrder(n.id, false, undefined, true);
     this.db.run(
       `INSERT OR REPLACE INTO notifications
-       (id, title, description, category, time, isRead, isRecent)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       (id, title, description, category, time, isRead, isRecent, sort_order)
+       VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT sort_order FROM notifications WHERE id = ?), ?))`,
       [
         n.id,
         n.title,
@@ -742,17 +959,33 @@ class SQLiteService {
         n.category || 'task',
         n.time || '',
         n.isRead ? 1 : 0,
-        n.isRecent ? 1 : 0
+        n.isRecent ? 1 : 0,
+        n.id,
+        sortOrder
       ]
     );
   }
 
   private saveProfileSync(p: UserProfile) {
     if (!this.db) return;
+    const extendedPayload = {
+      birthDate: p.birthDate ?? '',
+      city: p.city ?? '',
+      country: p.country ?? '',
+      currentStatus: p.currentStatus ?? '',
+      bio: p.bio ?? '',
+      professionalProfile: p.professionalProfile,
+      experiences: p.experiences,
+      educations: p.educations,
+      skills: p.skills,
+      languages: p.languages,
+      portfolioLinks: p.portfolioLinks,
+      additionalInfo: p.additionalInfo,
+    };
     this.db.run(
       `INSERT OR REPLACE INTO user_profile
-       (id, name, email, phone, address, isPremium, avatarUrl, notificationsEnabled, documents_json)
-       VALUES ('main_user', ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, name, email, phone, address, isPremium, avatarUrl, notificationsEnabled, documents_json, extended_json)
+       VALUES ('main_user', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         p.name || 'Tsiry Randria',
         p.email || '',
@@ -761,22 +994,39 @@ class SQLiteService {
         p.isPremium ? 1 : 0,
         p.avatarUrl || '',
         p.notificationsEnabled ? 1 : 0,
-        JSON.stringify(Array.isArray(p.documents) ? p.documents : [])
+        JSON.stringify(Array.isArray(p.documents) ? p.documents : []),
+        JSON.stringify(extendedPayload)
       ]
     );
   }
 
   private saveChatMessageSync(m: ChatMessage) {
     if (!this.db) return;
+    const sortOrder = this.computeSortOrder(m.id, true, undefined, true);
     this.db.run(
-      `INSERT OR REPLACE INTO chat_messages (id, role, text, timestamp, attachment)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT OR REPLACE INTO chat_messages (id, role, text, timestamp, attachment, sort_order)
+       VALUES (?, ?, ?, ?, ?, COALESCE((SELECT sort_order FROM chat_messages WHERE id = ?), ?))`,
       [
         m.id,
         m.role,
         m.text || '',
         m.timestamp || '',
-        m.attachment || ''
+        m.attachment || '',
+        m.id,
+        sortOrder
+      ]
+    );
+  }
+
+  private saveFinanceSettingsSync(s: FinanceSettings) {
+    if (!this.db) return;
+    this.db.run(
+      `INSERT OR REPLACE INTO finance_settings (id, monthlyBudgetMax, savingsGoalCurrent, savingsGoalTarget)
+       VALUES ('default', ?, ?, ?)`,
+      [
+        Math.max(0, Number(s.monthlyBudgetMax ?? initialFinanceSettings.monthlyBudgetMax)),
+        Math.max(0, Number(s.savingsGoalCurrent ?? initialFinanceSettings.savingsGoalCurrent)),
+        Math.max(0, Number(s.savingsGoalTarget ?? initialFinanceSettings.savingsGoalTarget)),
       ]
     );
   }
@@ -801,9 +1051,9 @@ class SQLiteService {
   // ==========================================
 
   getProjects(): Project[] {
-    if (!this.db) return initialProjects;
+    if (!this.db || !this.isInitialized) return initialProjects;
     try {
-      const res = this.db.exec("SELECT * FROM projects ORDER BY progress ASC");
+      const res = this.db.exec("SELECT * FROM projects ORDER BY progress ASC, sort_order DESC, rowid DESC");
       if (res.length === 0 || !res[0].values) return [];
       const cols = res[0].columns;
       return res[0].values.map(row => {
@@ -836,9 +1086,9 @@ class SQLiteService {
   }
 
   getTasks(): Task[] {
-    if (!this.db) return initialTasks;
+    if (!this.db || !this.isInitialized) return initialTasks;
     try {
-      const res = this.db.exec("SELECT * FROM tasks ORDER BY completed ASC, id DESC");
+      const res = this.db.exec("SELECT * FROM tasks ORDER BY completed ASC, sort_order DESC, rowid DESC");
       if (res.length === 0 || !res[0].values) return [];
       const cols = res[0].columns;
       return res[0].values.map(row => {
@@ -852,6 +1102,7 @@ class SQLiteService {
           priority: (obj.priority || 'Moyenne') as Task['priority'],
           status: (obj.status || 'À faire') as Task['status'],
           projectTitle: String(obj.projectTitle || ''),
+          startDate: String(obj.startDate || obj.createdAt || ''),
           dueDate: String(obj.dueDate || ''),
           dueTime: String(obj.dueTime || ''),
           createdAt: String(obj.createdAt || ''),
@@ -866,9 +1117,9 @@ class SQLiteService {
   }
 
   getNotes(): Note[] {
-    if (!this.db) return initialNotes;
+    if (!this.db || !this.isInitialized) return initialNotes;
     try {
-      const res = this.db.exec("SELECT * FROM notes ORDER BY isPinned DESC, id DESC");
+      const res = this.db.exec("SELECT * FROM notes ORDER BY isPinned DESC, sort_order DESC, rowid DESC");
       if (res.length === 0 || !res[0].values) return [];
       const cols = res[0].columns;
       return res[0].values.map(row => {
@@ -900,9 +1151,9 @@ class SQLiteService {
   }
 
   getJobs(): Job[] {
-    if (!this.db) return initialJobs;
+    if (!this.db || !this.isInitialized) return initialJobs;
     try {
-      const res = this.db.exec("SELECT * FROM jobs ORDER BY id DESC");
+      const res = this.db.exec("SELECT * FROM jobs ORDER BY sort_order DESC, rowid DESC");
       if (res.length === 0 || !res[0].values) return [];
       const cols = res[0].columns;
       return res[0].values.map(row => {
@@ -922,6 +1173,9 @@ class SQLiteService {
           isFavorite: Boolean(Number(obj.isFavorite)),
           logo: this.sanitizeLegacyUrl(obj.logo) || '/assets/logos/google.ico',
           applied: Boolean(Number(obj.applied)),
+          appliedCv: obj.appliedCv ? String(obj.appliedCv) : undefined,
+          appliedCoverNote: obj.appliedCoverNote ? String(obj.appliedCoverNote) : undefined,
+          appliedAt: obj.appliedAt ? String(obj.appliedAt) : undefined,
           postedDate: String(obj.postedDate || ''),
           deadlineDate: String(obj.deadlineDate || '')
         };
@@ -933,9 +1187,9 @@ class SQLiteService {
   }
 
   getTransactions(): Transaction[] {
-    if (!this.db) return initialTransactions;
+    if (!this.db || !this.isInitialized) return initialTransactions;
     try {
-      const res = this.db.exec("SELECT * FROM transactions ORDER BY id DESC");
+      const res = this.db.exec("SELECT * FROM transactions ORDER BY sort_order DESC, rowid DESC");
       if (res.length === 0 || !res[0].values) return [];
       const cols = res[0].columns;
       return res[0].values.map(row => {
@@ -958,9 +1212,9 @@ class SQLiteService {
   }
 
   getNotifications(): NotificationItem[] {
-    if (!this.db) return initialNotifications;
+    if (!this.db || !this.isInitialized) return initialNotifications;
     try {
-      const res = this.db.exec("SELECT * FROM notifications ORDER BY id DESC");
+      const res = this.db.exec("SELECT * FROM notifications ORDER BY sort_order DESC, rowid DESC");
       if (res.length === 0 || !res[0].values) return [];
       const cols = res[0].columns;
       return res[0].values.map(row => {
@@ -983,7 +1237,7 @@ class SQLiteService {
   }
 
   getProfile(): UserProfile {
-    if (!this.db) return initialProfile;
+    if (!this.db || !this.isInitialized) return initialProfile;
     try {
       const res = this.db.exec("SELECT * FROM user_profile WHERE id = 'main_user'");
       if (res.length === 0 || !res[0].values || res[0].values.length === 0) return initialProfile;
@@ -996,7 +1250,13 @@ class SQLiteService {
         documents = obj.documents_json ? JSON.parse(obj.documents_json) : initialProfile.documents;
       } catch { documents = initialProfile.documents; }
 
+      let extended: any = {};
+      try {
+        extended = obj.extended_json ? JSON.parse(obj.extended_json) : {};
+      } catch { extended = {}; }
+
       return {
+        ...initialProfile,
         name: String(obj.name || initialProfile.name),
         email: String(obj.email || initialProfile.email),
         phone: String(obj.phone || initialProfile.phone),
@@ -1004,7 +1264,19 @@ class SQLiteService {
         isPremium: Boolean(Number(obj.isPremium)),
         avatarUrl: this.sanitizeLegacyUrl(obj.avatarUrl) || '/assets/images/avatar_user.jpg',
         notificationsEnabled: Boolean(Number(obj.notificationsEnabled)),
-        documents
+        documents,
+        birthDate: extended.birthDate !== undefined ? extended.birthDate : initialProfile.birthDate,
+        city: extended.city !== undefined ? extended.city : initialProfile.city,
+        country: extended.country !== undefined ? extended.country : initialProfile.country,
+        currentStatus: extended.currentStatus !== undefined ? extended.currentStatus : initialProfile.currentStatus,
+        bio: extended.bio !== undefined ? extended.bio : initialProfile.bio,
+        professionalProfile: extended.professionalProfile || initialProfile.professionalProfile,
+        experiences: Array.isArray(extended.experiences) ? extended.experiences : initialProfile.experiences,
+        educations: Array.isArray(extended.educations) ? extended.educations : initialProfile.educations,
+        skills: Array.isArray(extended.skills) ? extended.skills : initialProfile.skills,
+        languages: Array.isArray(extended.languages) ? extended.languages : initialProfile.languages,
+        portfolioLinks: extended.portfolioLinks || initialProfile.portfolioLinks,
+        additionalInfo: extended.additionalInfo || initialProfile.additionalInfo,
       };
     } catch (e) {
       console.error('[Ketrika SQLite] Error reading profile:', e);
@@ -1013,9 +1285,9 @@ class SQLiteService {
   }
 
   getChatMessages(): ChatMessage[] {
-    if (!this.db) return initialChatMessages;
+    if (!this.db || !this.isInitialized) return initialChatMessages;
     try {
-      const res = this.db.exec("SELECT * FROM chat_messages ORDER BY id ASC");
+      const res = this.db.exec("SELECT * FROM chat_messages ORDER BY sort_order ASC, rowid ASC");
       if (res.length === 0 || !res[0].values) return initialChatMessages;
       const cols = res[0].columns;
       return res[0].values.map(row => {
@@ -1035,147 +1307,232 @@ class SQLiteService {
     }
   }
 
+  getFinanceSettings(): FinanceSettings {
+    if (!this.db || !this.isInitialized) return initialFinanceSettings;
+    try {
+      const res = this.db.exec("SELECT * FROM finance_settings WHERE id = 'default'");
+      if (res.length === 0 || !res[0].values || res[0].values.length === 0) {
+        return initialFinanceSettings;
+      }
+      const cols = res[0].columns;
+      const row = res[0].values[0];
+      const obj: any = {};
+      cols.forEach((col, idx) => { obj[col] = row[idx]; });
+      return {
+        monthlyBudgetMax: obj.monthlyBudgetMax !== undefined && obj.monthlyBudgetMax !== null ? Number(obj.monthlyBudgetMax) : initialFinanceSettings.monthlyBudgetMax,
+        savingsGoalCurrent: obj.savingsGoalCurrent !== undefined && obj.savingsGoalCurrent !== null ? Number(obj.savingsGoalCurrent) : initialFinanceSettings.savingsGoalCurrent,
+        savingsGoalTarget: obj.savingsGoalTarget !== undefined && obj.savingsGoalTarget !== null ? Number(obj.savingsGoalTarget) : initialFinanceSettings.savingsGoalTarget,
+      };
+    } catch (e) {
+      console.error('[Ketrika SQLite] Error reading finance settings:', e);
+      return initialFinanceSettings;
+    }
+  }
+
+  // Safe async readers that await initialization & all pending write operations
+  async readWhenReady<T>(reader: () => T): Promise<T> {
+    await this.waitForPendingOperations();
+    return reader();
+  }
+
+  async readAllWhenReady() {
+    await this.waitForPendingOperations();
+    return {
+      projects: this.getProjects(),
+      tasks: this.getTasks(),
+      notes: this.getNotes(),
+      jobs: this.getJobs(),
+      transactions: this.getTransactions(),
+      financeSettings: this.getFinanceSettings(),
+      notifications: this.getNotifications(),
+      profile: this.getProfile(),
+      chatMessages: this.getChatMessages(),
+    };
+  }
+
   // ==========================================
-  // PUBLIC API: WRITE / CRUD (WITH TRANSACTION PROTECTION)
+  // PUBLIC API: WRITE / CRUD (SERIALIZED & TRANSACTION PROTECTED)
   // ==========================================
 
   async saveProject(p: Project): Promise<void> {
-    this.runInTransaction(() => {
-      this.saveProjectSync(p);
+    return this.enqueueOperation(async () => {
+      this.runInTransaction(() => {
+        this.saveProjectSync(p);
+      });
+      await this.persist();
     });
-    await this.persist();
   }
 
   async deleteProject(id: string): Promise<void> {
-    if (!this.db) return;
-    this.runInTransaction(() => {
-      this.db!.run("DELETE FROM projects WHERE id = ?", [id]);
+    return this.enqueueOperation(async () => {
+      if (!this.db) return;
+      this.runInTransaction(() => {
+        this.db!.run("DELETE FROM projects WHERE id = ?", [id]);
+      });
+      await this.persist();
     });
-    await this.persist();
   }
 
   async saveTask(t: Task): Promise<void> {
-    this.runInTransaction(() => {
-      this.saveTaskSync(t);
+    return this.enqueueOperation(async () => {
+      this.runInTransaction(() => {
+        this.saveTaskSync(t);
+      });
+      await this.persist();
     });
-    await this.persist();
   }
 
   async deleteTask(id: string): Promise<void> {
-    if (!this.db) return;
-    this.runInTransaction(() => {
-      this.db!.run("DELETE FROM tasks WHERE id = ?", [id]);
+    return this.enqueueOperation(async () => {
+      if (!this.db) return;
+      this.runInTransaction(() => {
+        this.db!.run("DELETE FROM tasks WHERE id = ?", [id]);
+      });
+      await this.persist();
     });
-    await this.persist();
   }
 
   async saveNote(n: Note): Promise<void> {
-    this.runInTransaction(() => {
-      this.saveNoteSync(n);
+    return this.enqueueOperation(async () => {
+      this.runInTransaction(() => {
+        this.saveNoteSync(n);
+      });
+      await this.persist();
     });
-    await this.persist();
   }
 
   async deleteNote(id: string): Promise<void> {
-    if (!this.db) return;
-    this.runInTransaction(() => {
-      this.db!.run("DELETE FROM notes WHERE id = ?", [id]);
+    return this.enqueueOperation(async () => {
+      if (!this.db) return;
+      this.runInTransaction(() => {
+        this.db!.run("DELETE FROM notes WHERE id = ?", [id]);
+      });
+      await this.persist();
     });
-    await this.persist();
   }
 
   async saveJob(j: Job): Promise<void> {
-    this.runInTransaction(() => {
-      this.saveJobSync(j);
+    return this.enqueueOperation(async () => {
+      this.runInTransaction(() => {
+        this.saveJobSync(j);
+      });
+      await this.persist();
     });
-    await this.persist();
   }
 
   async saveTransaction(tx: Transaction): Promise<void> {
-    this.runInTransaction(() => {
-      this.saveTransactionSync(tx);
+    return this.enqueueOperation(async () => {
+      this.runInTransaction(() => {
+        this.saveTransactionSync(tx);
+      });
+      await this.persist();
     });
-    await this.persist();
   }
 
   async deleteTransaction(id: string): Promise<void> {
-    if (!this.db) return;
-    this.runInTransaction(() => {
-      this.db!.run("DELETE FROM transactions WHERE id = ?", [id]);
+    return this.enqueueOperation(async () => {
+      if (!this.db) return;
+      this.runInTransaction(() => {
+        this.db!.run("DELETE FROM transactions WHERE id = ?", [id]);
+      });
+      await this.persist();
     });
-    await this.persist();
   }
 
   async saveNotification(n: NotificationItem): Promise<void> {
-    this.runInTransaction(() => {
-      this.saveNotificationSync(n);
+    return this.enqueueOperation(async () => {
+      this.runInTransaction(() => {
+        this.saveNotificationSync(n);
+      });
+      await this.persist();
     });
-    await this.persist();
   }
 
   async deleteNotification(id: string): Promise<void> {
-    if (!this.db) return;
-    this.runInTransaction(() => {
-      this.db!.run("DELETE FROM notifications WHERE id = ?", [id]);
+    return this.enqueueOperation(async () => {
+      if (!this.db) return;
+      this.runInTransaction(() => {
+        this.db!.run("DELETE FROM notifications WHERE id = ?", [id]);
+      });
+      await this.persist();
     });
-    await this.persist();
   }
 
   async clearNotifications(): Promise<void> {
-    if (!this.db) return;
-    this.runInTransaction(() => {
-      this.db!.run("DELETE FROM notifications;");
+    return this.enqueueOperation(async () => {
+      if (!this.db) return;
+      this.runInTransaction(() => {
+        this.db!.run("DELETE FROM notifications;");
+      });
+      await this.persist();
     });
-    await this.persist();
   }
 
   async saveProfile(p: UserProfile): Promise<void> {
-    this.runInTransaction(() => {
-      this.saveProfileSync(p);
+    return this.enqueueOperation(async () => {
+      this.runInTransaction(() => {
+        this.saveProfileSync(p);
+      });
+      await this.persist();
     });
-    await this.persist();
   }
 
   async saveChatMessage(m: ChatMessage): Promise<void> {
-    this.runInTransaction(() => {
-      this.saveChatMessageSync(m);
+    return this.enqueueOperation(async () => {
+      this.runInTransaction(() => {
+        this.saveChatMessageSync(m);
+      });
+      await this.persist();
     });
-    await this.persist();
   }
 
   async clearChatMessages(): Promise<void> {
-    if (!this.db) return;
-    this.runInTransaction(() => {
-      this.db!.run("DELETE FROM chat_messages;");
-      if (initialChatMessages[0]) {
-        this.saveChatMessageSync(initialChatMessages[0]);
-      }
+    return this.enqueueOperation(async () => {
+      if (!this.db) return;
+      this.runInTransaction(() => {
+        this.db!.run("DELETE FROM chat_messages;");
+        if (initialChatMessages[0]) {
+          this.saveChatMessageSync(initialChatMessages[0]);
+        }
+      });
+      await this.persist();
     });
-    await this.persist();
+  }
+
+  async saveFinanceSettings(s: FinanceSettings): Promise<void> {
+    return this.enqueueOperation(async () => {
+      this.runInTransaction(() => {
+        this.saveFinanceSettingsSync(s);
+      });
+      await this.persist();
+    });
   }
 
   async resetDatabase(): Promise<void> {
-    if (!this.db) return;
-    this.runInTransaction(() => {
-      this.db!.run(`
-        DELETE FROM projects;
-        DELETE FROM tasks;
-        DELETE FROM notes;
-        DELETE FROM jobs;
-        DELETE FROM transactions;
-        DELETE FROM notifications;
-        DELETE FROM user_profile;
-        DELETE FROM chat_messages;
-        DELETE FROM meta_info;
-      `);
-      this.runSafeMigration();
+    return this.enqueueOperation(async () => {
+      if (!this.db) return;
+      this.runInTransaction(() => {
+        this.db!.run(`
+          DELETE FROM projects;
+          DELETE FROM tasks;
+          DELETE FROM notes;
+          DELETE FROM jobs;
+          DELETE FROM transactions;
+          DELETE FROM finance_settings;
+          DELETE FROM notifications;
+          DELETE FROM user_profile;
+          DELETE FROM chat_messages;
+          DELETE FROM meta_info;
+        `);
+        this.runSafeMigrationSync(true);
+      });
+      await this.persistImmediately();
     });
-    await this.persistImmediately();
   }
 
   // Export native SQLite database file (.db)
   exportSqliteBinary(): Uint8Array | null {
-    if (!this.db) return null;
+    if (!this.db || !this.isInitialized) return null;
     try {
       const binary = this.db.export();
       return isValidSqliteBinary(binary) ? binary : null;
@@ -1184,37 +1541,47 @@ class SQLiteService {
     }
   }
 
-  // Import SQLite file from user upload with thorough header and integrity checks
+  // Import SQLite file from user upload with thorough header, integrity, and atomic schema migration checks
   async importSqliteBinary(bytes: Uint8Array): Promise<boolean> {
-    if (!this.SQL) return false;
-    if (!isValidSqliteBinary(bytes)) {
-      console.error('[Ketrika SQLite] Invalid SQLite binary file provided.');
-      return false;
-    }
-
-    try {
-      const candidateDb = new this.SQL.Database(bytes);
-      const integrity = candidateDb.exec("PRAGMA quick_check;");
-      if (integrity?.[0]?.values?.[0]?.[0] !== 'ok') {
-        console.error('[Ketrika SQLite] Imported SQLite database failed integrity check.');
+    return this.enqueueOperation(async () => {
+      if (!this.SQL) return false;
+      if (!isValidSqliteBinary(bytes)) {
+        console.error('[Ketrika SQLite] Invalid SQLite binary file provided.');
         return false;
       }
 
-      this.db = candidateDb;
-      this.configurePragmas();
-      this.ensureSchemaIntegrity();
-      await this.persistImmediately();
-      console.log('[Ketrika SQLite] Imported SQLite database verified and persisted.');
-      return true;
-    } catch (e) {
-      console.error('[Ketrika SQLite] Failed to import SQLite binary:', e);
-      return false;
-    }
+      try {
+        const candidateDb = new this.SQL.Database(bytes);
+        const integrity = candidateDb.exec("PRAGMA quick_check;");
+        if (integrity?.[0]?.values?.[0]?.[0] !== 'ok') {
+          console.error('[Ketrika SQLite] Imported SQLite database failed integrity check.');
+          candidateDb.close();
+          return false;
+        }
+
+        // Apply schema & sort_order migrations on candidateDb BEFORE swapping active db reference
+        this.ensureSchemaAndMigrateSync(candidateDb);
+
+        const oldDb = this.db;
+        this.db = candidateDb;
+        this.configurePragmas();
+        this.isInitialized = true;
+        await this.persistImmediately();
+        if (oldDb && oldDb !== candidateDb) {
+          try { oldDb.close(); } catch {}
+        }
+        console.log('[Ketrika SQLite] Imported SQLite database verified and persisted.');
+        return true;
+      } catch (e) {
+        console.error('[Ketrika SQLite] Failed to import SQLite binary:', e);
+        return false;
+      }
+    });
   }
 
   // Live Stats for UI with integrity healthcheck
   getDatabaseStats() {
-    if (!this.db) {
+    if (!this.db || !this.isInitialized) {
       return {
         isReady: false,
         isHealthy: false,

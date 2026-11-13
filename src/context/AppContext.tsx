@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { 
   NavigationTab, 
   DeviceMode, 
@@ -7,6 +7,7 @@ import {
   Note, 
   Job, 
   Transaction, 
+  FinanceSettings,
   NotificationItem, 
   UserProfile, 
   ChatMessage 
@@ -17,6 +18,7 @@ import {
   initialNotes, 
   initialJobs, 
   initialTransactions, 
+  initialFinanceSettings,
   initialNotifications, 
   initialProfile, 
   initialChatMessages 
@@ -64,7 +66,10 @@ interface AppContextType {
   
   // Tasks
   tasks: Task[];
+  isEditingTask: boolean;
+  setIsEditingTask: (val: boolean) => void;
   addTask: (task: Omit<Task, 'id' | 'createdAt'>) => void;
+  updateTask: (taskId: string, updates: Partial<Task>) => void;
   toggleTask: (taskId: string) => void;
   deleteTask: (taskId: string) => void;
   
@@ -83,7 +88,7 @@ interface AppContextType {
   isJobDetailOpen: boolean;
   setIsJobDetailOpen: (val: boolean) => void;
   toggleFavoriteJob: (id: string) => void;
-  applyToJob: (id: string) => void;
+  applyToJob: (id: string, details?: { selectedCv?: string; coverNote?: string }) => void;
   
   // Finances
   transactions: Transaction[];
@@ -92,6 +97,8 @@ interface AppContextType {
   totalRevenue: number;
   totalExpense: number;
   currentBalance: number;
+  financeSettings: FinanceSettings;
+  updateFinanceSettings: (updates: Partial<FinanceSettings>) => void;
   
   // Notifications
   notifications: NotificationItem[];
@@ -103,6 +110,8 @@ interface AppContextType {
   
   // Profile
   profile: UserProfile;
+  isEditingProfileInfo: boolean;
+  setIsEditingProfileInfo: (val: boolean) => void;
   updateProfile: (updates: Partial<UserProfile>) => void;
   addDocument: (doc: { name: string; type: string; size: string; date: string }) => void;
   
@@ -120,6 +129,45 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 const LOCAL_STORAGE_KEY = 'ketrika_app_state_v1';
+const MAX_LOCAL_STORAGE_DATA_URI_LENGTH = 4096;
+const MAX_LOCAL_STORAGE_SLICE_BYTES = 512 * 1024;
+
+const stripHeavyDataUri = (value?: string): string | undefined => {
+  if (!value) return value;
+  if (value.startsWith('data:') && value.length > MAX_LOCAL_STORAGE_DATA_URI_LENGTH) {
+    return undefined;
+  }
+  return value;
+};
+
+const safeWriteLocalStorageSlice = (key: string, data: unknown) => {
+  try {
+    const serialized = JSON.stringify(data);
+    if (serialized.length > MAX_LOCAL_STORAGE_SLICE_BYTES) {
+      // Avoid saturating localStorage quota; full data remains safely persisted in SQLite/IndexedDB.
+      localStorage.removeItem(key);
+      return;
+    }
+    localStorage.setItem(key, serialized);
+  } catch {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // Ignore storage cleanup errors
+    }
+  }
+};
+
+type DataSlice =
+  | 'projects'
+  | 'tasks'
+  | 'notes'
+  | 'jobs'
+  | 'transactions'
+  | 'financeSettings'
+  | 'notifications'
+  | 'profile'
+  | 'chat';
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [currentTab, setCurrentTab] = useState<NavigationTab>('bienvenue');
@@ -127,6 +175,28 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [showQuickMenu, setShowQuickMenu] = useState<boolean>(false);
   const [balanceVisible, setBalanceVisible] = useState<boolean>(true);
   const [isDbReady, setIsDbReady] = useState<boolean>(false);
+
+  const sliceVersionsRef = useRef<Record<DataSlice, number>>({
+    projects: 0,
+    tasks: 0,
+    notes: 0,
+    jobs: 0,
+    transactions: 0,
+    financeSettings: 0,
+    notifications: 0,
+    profile: 0,
+    chat: 0,
+  });
+
+  const markSliceMutated = (slice: DataSlice) => {
+    sliceVersionsRef.current[slice] += 1;
+  };
+
+  const persistAsync = (promise: Promise<unknown>, contextLabel: string) => {
+    promise.catch((err) => {
+      console.warn(`[Ketrika SQLite] ${contextLabel}:`, err);
+    });
+  };
 
   // Core entities with immediate local fallback state
   const [projects, setProjects] = useState<Project[]>(() => {
@@ -147,6 +217,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return initialTasks;
     }
   });
+  const [isEditingTask, setIsEditingTask] = useState<boolean>(false);
 
   const [notes, setNotes] = useState<Note[]>(() => {
     try {
@@ -184,6 +255,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   });
 
+  const [financeSettings, setFinanceSettings] = useState<FinanceSettings>(() => {
+    try {
+      const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_finance_settings`);
+      return saved ? { ...initialFinanceSettings, ...JSON.parse(saved) } : initialFinanceSettings;
+    } catch {
+      return initialFinanceSettings;
+    }
+  });
+
   const [notifications, setNotifications] = useState<NotificationItem[]>(() => {
     try {
       const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_notifications`);
@@ -196,11 +276,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [profile, setProfile] = useState<UserProfile>(() => {
     try {
       const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_profile`);
-      return saved ? JSON.parse(saved) : initialProfile;
+      return saved ? { ...initialProfile, ...JSON.parse(saved) } : initialProfile;
     } catch {
       return initialProfile;
     }
   });
+  const [isEditingProfileInfo, setIsEditingProfileInfo] = useState<boolean>(false);
 
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>(() => {
     try {
@@ -221,30 +302,55 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       try {
         await sqliteService.init();
 
+        let snapshotVersions = { ...sliceVersionsRef.current };
+        let loaded = await sqliteService.readAllWhenReady();
+
+        while (
+          isMounted &&
+          (Object.keys(snapshotVersions) as DataSlice[]).some(
+            (key) => snapshotVersions[key] !== sliceVersionsRef.current[key]
+          )
+        ) {
+          snapshotVersions = { ...sliceVersionsRef.current };
+          loaded = await sqliteService.readAllWhenReady();
+        }
+
         if (isMounted) {
-          const loadedProjects = sqliteService.getProjects();
-          const loadedTasks = sqliteService.getTasks();
-          const loadedNotes = sqliteService.getNotes();
-          const loadedJobs = sqliteService.getJobs();
-          const loadedTransactions = sqliteService.getTransactions();
-          const loadedNotifications = sqliteService.getNotifications();
-          const loadedProfile = sqliteService.getProfile();
-          const loadedChat = sqliteService.getChatMessages();
+          if (sqliteService.isDatabaseReady()) {
+            if (sliceVersionsRef.current.projects === 0) {
+              setProjects(loaded.projects);
+            }
+            if (sliceVersionsRef.current.tasks === 0) {
+              setTasks(loaded.tasks);
+            }
+            if (sliceVersionsRef.current.notes === 0) {
+              setNotes(loaded.notes);
+            }
+            if (sliceVersionsRef.current.jobs === 0) {
+              setJobs(loaded.jobs);
+            }
+            if (sliceVersionsRef.current.transactions === 0) {
+              setTransactions(loaded.transactions);
+            }
+            if (sliceVersionsRef.current.financeSettings === 0 && loaded.financeSettings) {
+              setFinanceSettings(loaded.financeSettings);
+            }
+            if (sliceVersionsRef.current.notifications === 0) {
+              setNotifications(loaded.notifications);
+            }
+            if (sliceVersionsRef.current.profile === 0 && loaded.profile) {
+              setProfile(loaded.profile);
+            }
+            if (sliceVersionsRef.current.chat === 0 && loaded.chatMessages.length > 0) {
+              setChatMessages(loaded.chatMessages);
+            }
+          }
 
-          if (loadedProjects && loadedProjects.length > 0) setProjects(loadedProjects);
-          if (loadedTasks && loadedTasks.length > 0) setTasks(loadedTasks);
-          if (loadedNotes && loadedNotes.length > 0) setNotes(loadedNotes);
-          if (loadedJobs && loadedJobs.length > 0) setJobs(loadedJobs);
-          if (loadedTransactions && loadedTransactions.length > 0) setTransactions(loadedTransactions);
-          if (loadedNotifications && loadedNotifications.length > 0) setNotifications(loadedNotifications);
-          if (loadedProfile) setProfile(loadedProfile);
-          if (loadedChat && loadedChat.length > 0) setChatMessages(loadedChat);
-
-          setIsDbReady(true);
+          setIsDbReady(sqliteService.isDatabaseReady());
         }
       } catch (err) {
         console.warn('[Ketrika SQLite] SQLite bootstrap notice:', err);
-        if (isMounted) setIsDbReady(true);
+        if (isMounted) setIsDbReady(sqliteService.isDatabaseReady());
       }
     };
 
@@ -255,21 +361,41 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
   }, []);
 
-  // Dual-sync to localStorage as a safety replica
+  // Dual-sync lightweight metadata replica to localStorage (bulky Base64 stays exclusively in SQLite/IndexedDB)
   useEffect(() => {
-    try {
-      localStorage.setItem(`${LOCAL_STORAGE_KEY}_projects`, JSON.stringify(projects));
-      localStorage.setItem(`${LOCAL_STORAGE_KEY}_tasks`, JSON.stringify(tasks));
-      localStorage.setItem(`${LOCAL_STORAGE_KEY}_notes`, JSON.stringify(notes));
-      localStorage.setItem(`${LOCAL_STORAGE_KEY}_jobs`, JSON.stringify(jobs));
-      localStorage.setItem(`${LOCAL_STORAGE_KEY}_transactions`, JSON.stringify(transactions));
-      localStorage.setItem(`${LOCAL_STORAGE_KEY}_notifications`, JSON.stringify(notifications));
-      localStorage.setItem(`${LOCAL_STORAGE_KEY}_profile`, JSON.stringify(profile));
-      localStorage.setItem(`${LOCAL_STORAGE_KEY}_chat`, JSON.stringify(chatMessages));
-    } catch {
-      // ignore storage errors
-    }
-  }, [projects, tasks, notes, jobs, transactions, notifications, profile, chatMessages]);
+    const sanitizedProjects = projects.map((p) => ({
+      ...p,
+      image: stripHeavyDataUri(p.image) ?? '',
+    }));
+    const sanitizedNotes = notes.map((n) => ({
+      ...n,
+      image: stripHeavyDataUri(n.image),
+    }));
+    const sanitizedProfile: UserProfile = {
+      ...profile,
+      avatarUrl: stripHeavyDataUri(profile.avatarUrl) || '/assets/images/avatar_user.jpg',
+      documents: Array.isArray(profile.documents)
+        ? profile.documents.map((doc) => ({
+            ...doc,
+            dataUrl: stripHeavyDataUri(doc.dataUrl),
+          }))
+        : [],
+    };
+    const sanitizedChat = chatMessages.map((m) => ({
+      ...m,
+      attachment: stripHeavyDataUri(m.attachment),
+    }));
+
+    safeWriteLocalStorageSlice(`${LOCAL_STORAGE_KEY}_projects`, sanitizedProjects);
+    safeWriteLocalStorageSlice(`${LOCAL_STORAGE_KEY}_tasks`, tasks);
+    safeWriteLocalStorageSlice(`${LOCAL_STORAGE_KEY}_notes`, sanitizedNotes);
+    safeWriteLocalStorageSlice(`${LOCAL_STORAGE_KEY}_jobs`, jobs);
+    safeWriteLocalStorageSlice(`${LOCAL_STORAGE_KEY}_transactions`, transactions);
+    safeWriteLocalStorageSlice(`${LOCAL_STORAGE_KEY}_finance_settings`, financeSettings);
+    safeWriteLocalStorageSlice(`${LOCAL_STORAGE_KEY}_notifications`, notifications);
+    safeWriteLocalStorageSlice(`${LOCAL_STORAGE_KEY}_profile`, sanitizedProfile);
+    safeWriteLocalStorageSlice(`${LOCAL_STORAGE_KEY}_chat`, sanitizedChat);
+  }, [projects, tasks, notes, jobs, transactions, financeSettings, notifications, profile, chatMessages]);
 
   // Project handlers
   const addProject = (proj: Omit<Project, 'id'>) => {
@@ -277,8 +403,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       ...proj,
       id: `proj-${Date.now()}`,
     };
+    markSliceMutated('projects');
     setProjects(prev => [newProj, ...prev]);
-    sqliteService.saveProject(newProj);
+    persistAsync(sqliteService.saveProject(newProj), 'saveProject');
 
     addNotificationItem({
       title: 'Nouveau projet',
@@ -289,33 +416,36 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const updateProject = (id: string, updates: Partial<Project>) => {
+    markSliceMutated('projects');
     setProjects(prev => {
       const updated = prev.map(p => p.id === id ? { ...p, ...updates } : p);
       const target = updated.find(p => p.id === id);
-      if (target) sqliteService.saveProject(target);
+      if (target) persistAsync(sqliteService.saveProject(target), 'saveProject');
       return updated;
     });
   };
 
   const deleteProject = (id: string) => {
+    markSliceMutated('projects');
     setProjects(prev => prev.filter(p => p.id !== id));
-    sqliteService.deleteProject(id);
+    persistAsync(sqliteService.deleteProject(id), 'deleteProject');
   };
 
   const toggleSubTask = (projectId: string, subTaskId: string) => {
+    markSliceMutated('projects');
     setProjects(prev => {
       const updated = prev.map(proj => {
         if (proj.id !== projectId) return proj;
         const updatedTasks = proj.tasks.map(t => t.id === subTaskId ? { ...t, completed: !t.completed } : t);
         const doneCount = updatedTasks.filter(t => t.completed).length;
-        const newProgress = Math.round((doneCount / updatedTasks.length) * 100);
+        const newProgress = updatedTasks.length > 0 ? Math.round((doneCount / updatedTasks.length) * 100) : 0;
         const modProj: Project = {
           ...proj,
           tasks: updatedTasks,
           progress: newProgress,
           status: newProgress === 100 ? 'Terminé' : (newProgress > 0 ? 'En cours' : 'À faire')
         };
-        sqliteService.saveProject(modProj);
+        persistAsync(sqliteService.saveProject(modProj), 'saveProject');
         return modProj;
       });
       return updated;
@@ -329,8 +459,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       id: `task-${Date.now()}`,
       createdAt: new Date().toLocaleDateString('fr-FR'),
     };
+    markSliceMutated('tasks');
     setTasks(prev => [newTask, ...prev]);
-    sqliteService.saveTask(newTask);
+    persistAsync(sqliteService.saveTask(newTask), 'saveTask');
 
     addNotificationItem({
       title: 'Nouvelle tâche ajoutée',
@@ -341,6 +472,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const toggleTask = (taskId: string) => {
+    markSliceMutated('tasks');
     setTasks(prev => {
       const updated = prev.map(t => {
         if (t.id === taskId) {
@@ -362,7 +494,22 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             completed: nextState,
             status: nextState ? 'Terminée' : 'À faire'
           };
-          sqliteService.saveTask(modTask);
+          persistAsync(sqliteService.saveTask(modTask), 'saveTask');
+          return modTask;
+        }
+        return t;
+      });
+      return updated;
+    });
+  };
+
+  const updateTask = (taskId: string, updates: Partial<Task>) => {
+    markSliceMutated('tasks');
+    setTasks(prev => {
+      const updated = prev.map(t => {
+        if (t.id === taskId) {
+          const modTask: Task = { ...t, ...updates };
+          persistAsync(sqliteService.saveTask(modTask), 'saveTask');
           return modTask;
         }
         return t;
@@ -372,8 +519,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const deleteTask = (taskId: string) => {
+    markSliceMutated('tasks');
     setTasks(prev => prev.filter(t => t.id !== taskId));
-    sqliteService.deleteTask(taskId);
+    persistAsync(sqliteService.deleteTask(taskId), 'deleteTask');
   };
 
   // Note handlers
@@ -385,17 +533,19 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       createdAt: now,
       updatedAt: now,
     };
+    markSliceMutated('notes');
     setNotes(prev => [newNote, ...prev]);
-    sqliteService.saveNote(newNote);
+    persistAsync(sqliteService.saveNote(newNote), 'saveNote');
   };
 
   const updateNote = (id: string, updates: Partial<Note>) => {
     const now = new Date().toLocaleDateString('fr-FR');
+    markSliceMutated('notes');
     setNotes(prev => {
       const updated = prev.map(n => {
         if (n.id === id) {
           const mod = { ...n, ...updates, updatedAt: now };
-          sqliteService.saveNote(mod);
+          persistAsync(sqliteService.saveNote(mod), 'saveNote');
           return mod;
         }
         return n;
@@ -405,16 +555,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const deleteNote = (id: string) => {
+    markSliceMutated('notes');
     setNotes(prev => prev.filter(n => n.id !== id));
-    sqliteService.deleteNote(id);
+    persistAsync(sqliteService.deleteNote(id), 'deleteNote');
   };
 
   const togglePinNote = (id: string) => {
+    markSliceMutated('notes');
     setNotes(prev => {
       const updated = prev.map(n => {
         if (n.id === id) {
           const mod = { ...n, isPinned: !n.isPinned };
-          sqliteService.saveNote(mod);
+          persistAsync(sqliteService.saveNote(mod), 'saveNote');
           return mod;
         }
         return n;
@@ -424,11 +576,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const toggleFavoriteNote = (id: string) => {
+    markSliceMutated('notes');
     setNotes(prev => {
       const updated = prev.map(n => {
         if (n.id === id) {
           const mod = { ...n, isFavorite: !n.isFavorite };
-          sqliteService.saveNote(mod);
+          persistAsync(sqliteService.saveNote(mod), 'saveNote');
           return mod;
         }
         return n;
@@ -439,11 +592,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Job handlers
   const toggleFavoriteJob = (id: string) => {
+    markSliceMutated('jobs');
     setJobs(prev => {
       const updated = prev.map(j => {
         if (j.id === id) {
           const mod = { ...j, isFavorite: !j.isFavorite };
-          sqliteService.saveJob(mod);
+          persistAsync(sqliteService.saveJob(mod), 'saveJob');
           return mod;
         }
         return j;
@@ -452,23 +606,35 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     });
   };
 
-  const applyToJob = (id: string) => {
+  const applyToJob = (id: string, details?: { selectedCv?: string; coverNote?: string }) => {
+    const appliedAt = new Date().toLocaleDateString('fr-FR');
+    const selectedCv = details?.selectedCv !== undefined ? details.selectedCv.trim() : undefined;
+    const coverNote = details?.coverNote !== undefined ? details.coverNote.trim() : undefined;
+    const targetJob = jobs.find(j => j.id === id);
+    const wasAlreadyApplied = Boolean(targetJob?.applied);
+
+    markSliceMutated('jobs');
     setJobs(prev => {
       const updated = prev.map(j => {
         if (j.id === id) {
-          const mod = { ...j, applied: true };
-          sqliteService.saveJob(mod);
+          const mod: Job = {
+            ...j,
+            applied: true,
+            appliedCv: selectedCv !== undefined ? selectedCv : j.appliedCv,
+            appliedCoverNote: coverNote !== undefined ? coverNote : j.appliedCoverNote,
+            appliedAt,
+          };
+          persistAsync(sqliteService.saveJob(mod), 'saveJob');
           return mod;
         }
         return j;
       });
       return updated;
     });
-    const targetJob = jobs.find(j => j.id === id);
     if (targetJob) {
       addNotificationItem({
-        title: 'Candidature envoyée',
-        description: `Votre candidature pour le poste de ${targetJob.title} chez ${targetJob.company} a été transmise.`,
+        title: wasAlreadyApplied ? 'Candidature mise à jour' : 'Candidature envoyée',
+        description: `Votre candidature pour le poste de ${targetJob.title} chez ${targetJob.company}${selectedCv ? ` (${selectedCv})` : ''} a été enregistrée.`,
         category: 'task',
         time: "À l'instant",
       });
@@ -491,8 +657,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       ...tx,
       id: `tr-${Date.now()}`,
     };
+    markSliceMutated('transactions');
     setTransactions(prev => [newTx, ...prev]);
-    sqliteService.saveTransaction(newTx);
+    persistAsync(sqliteService.saveTransaction(newTx), 'saveTransaction');
 
     addNotificationItem({
       title: tx.type === 'Revenu' ? 'Revenu enregistré' : 'Dépense enregistrée',
@@ -503,8 +670,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const deleteTransaction = (id: string) => {
+    markSliceMutated('transactions');
     setTransactions(prev => prev.filter(t => t.id !== id));
-    sqliteService.deleteTransaction(id);
+    persistAsync(sqliteService.deleteTransaction(id), 'deleteTransaction');
   };
 
   const totalRevenue = transactions
@@ -517,6 +685,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const currentBalance = totalRevenue - totalExpense;
 
+  const updateFinanceSettings = (updates: Partial<FinanceSettings>) => {
+    markSliceMutated('financeSettings');
+    setFinanceSettings(prev => {
+      const next: FinanceSettings = { ...prev, ...updates };
+      persistAsync(sqliteService.saveFinanceSettings(next), 'saveFinanceSettings');
+      return next;
+    });
+  };
+
   // Notification handlers
   const addNotificationItem = (item: Omit<NotificationItem, 'id' | 'isRead' | 'isRecent'>) => {
     const newNotif: NotificationItem = {
@@ -525,18 +702,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       isRead: false,
       isRecent: true,
     };
+    markSliceMutated('notifications');
     setNotifications(prev => [newNotif, ...prev]);
-    sqliteService.saveNotification(newNotif);
+    persistAsync(sqliteService.saveNotification(newNotif), 'saveNotification');
   };
 
   const unreadNotificationCount = notifications.filter(n => !n.isRead).length;
 
   const markNotificationRead = (id: string) => {
+    markSliceMutated('notifications');
     setNotifications(prev => {
       const updated = prev.map(n => {
         if (n.id === id) {
           const mod = { ...n, isRead: true };
-          sqliteService.saveNotification(mod);
+          persistAsync(sqliteService.saveNotification(mod), 'saveNotification');
           return mod;
         }
         return n;
@@ -546,15 +725,17 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const deleteNotification = (id: string) => {
+    markSliceMutated('notifications');
     setNotifications(prev => prev.filter(n => n.id !== id));
-    sqliteService.deleteNotification(id);
+    persistAsync(sqliteService.deleteNotification(id), 'deleteNotification');
   };
 
   const markAllNotificationsRead = () => {
+    markSliceMutated('notifications');
     setNotifications(prev => {
       const updated = prev.map(n => {
         const mod = { ...n, isRead: true };
-        sqliteService.saveNotification(mod);
+        persistAsync(sqliteService.saveNotification(mod), 'saveNotification');
         return mod;
       });
       return updated;
@@ -562,23 +743,26 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const clearAllNotifications = () => {
+    markSliceMutated('notifications');
     setNotifications([]);
-    sqliteService.clearNotifications();
+    persistAsync(sqliteService.clearNotifications(), 'clearNotifications');
   };
 
   // Profile handlers
   const updateProfile = (updates: Partial<UserProfile>) => {
+    markSliceMutated('profile');
     setProfile(prev => {
       const mod = { ...prev, ...updates };
-      sqliteService.saveProfile(mod);
+      persistAsync(sqliteService.saveProfile(mod), 'saveProfile');
       return mod;
     });
   };
 
   const addDocument = (doc: { name: string; type: string; size: string; date: string }) => {
+    markSliceMutated('profile');
     setProfile(prev => {
       const mod = { ...prev, documents: [...prev.documents, doc] };
-      sqliteService.saveProfile(mod);
+      persistAsync(sqliteService.saveProfile(mod), 'saveProfile');
       return mod;
     });
   };
@@ -593,8 +777,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       attachment,
     };
 
+    markSliceMutated('chat');
     setChatMessages(prev => [...prev, userMsg]);
-    sqliteService.saveChatMessage(userMsg);
+    persistAsync(sqliteService.saveChatMessage(userMsg), 'saveChatMessage');
     setIsGeneratingAI(true);
 
     try {
@@ -651,7 +836,7 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
       };
 
       setChatMessages(prev => [...prev, assistantMsg]);
-      sqliteService.saveChatMessage(assistantMsg);
+      persistAsync(sqliteService.saveChatMessage(assistantMsg), 'saveChatMessage');
     } catch {
       const errorMsg: ChatMessage = {
         id: `msg-${Date.now() + 1}`,
@@ -660,19 +845,24 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
         timestamp: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
       };
       setChatMessages(prev => [...prev, errorMsg]);
-      sqliteService.saveChatMessage(errorMsg);
+      persistAsync(sqliteService.saveChatMessage(errorMsg), 'saveChatMessage');
     } finally {
       setIsGeneratingAI(false);
     }
   };
 
   const clearChat = () => {
+    markSliceMutated('chat');
     setChatMessages([initialChatMessages[0]]);
-    sqliteService.clearChatMessages();
+    persistAsync(sqliteService.clearChatMessages(), 'clearChatMessages');
   };
 
   // SQLite Binary Export (.db file for Android / backups)
   const exportSqliteDb = () => {
+    if (!sqliteService.isDatabaseReady()) {
+      alert("La base SQLite est en cours d'initialisation.");
+      return;
+    }
     const bytes = sqliteService.exportSqliteBinary();
     if (!bytes) {
       alert("La base SQLite est en cours d'initialisation.");
@@ -693,14 +883,20 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
       const buffer = await file.arrayBuffer();
       const success = await sqliteService.importSqliteBinary(new Uint8Array(buffer));
       if (success) {
-        setProjects(sqliteService.getProjects());
-        setTasks(sqliteService.getTasks());
-        setNotes(sqliteService.getNotes());
-        setJobs(sqliteService.getJobs());
-        setTransactions(sqliteService.getTransactions());
-        setNotifications(sqliteService.getNotifications());
-        setProfile(sqliteService.getProfile());
-        setChatMessages(sqliteService.getChatMessages());
+        const all = await sqliteService.readAllWhenReady();
+        (Object.keys(sliceVersionsRef.current) as DataSlice[]).forEach((key) => {
+          sliceVersionsRef.current[key] += 1;
+        });
+        setProjects(all.projects);
+        setTasks(all.tasks);
+        setNotes(all.notes);
+        setJobs(all.jobs);
+        setTransactions(all.transactions);
+        setFinanceSettings(all.financeSettings);
+        setNotifications(all.notifications);
+        setProfile(all.profile);
+        setChatMessages(all.chatMessages);
+        setIsDbReady(sqliteService.isDatabaseReady());
         return true;
       }
       return false;
@@ -720,6 +916,7 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
       notes,
       jobs,
       transactions,
+      financeSettings,
       notifications,
       profile,
       chatMessages,
@@ -737,6 +934,9 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
   };
 
   const resetAllData = async () => {
+    (Object.keys(sliceVersionsRef.current) as DataSlice[]).forEach((key) => {
+      sliceVersionsRef.current[key] += 1;
+    });
     await sqliteService.resetDatabase();
     localStorage.clear();
     setProjects(initialProjects);
@@ -744,6 +944,7 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
     setNotes(initialNotes);
     setJobs(initialJobs);
     setTransactions(initialTransactions);
+    setFinanceSettings(initialFinanceSettings);
     setNotifications(initialNotifications);
     setProfile(initialProfile);
     setChatMessages(initialChatMessages);
@@ -771,7 +972,10 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
       deleteProject,
       toggleSubTask,
       tasks,
+      isEditingTask,
+      setIsEditingTask,
       addTask,
+      updateTask,
       toggleTask,
       deleteTask,
       notes,
@@ -793,6 +997,8 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
       totalRevenue,
       totalExpense,
       currentBalance,
+      financeSettings,
+      updateFinanceSettings,
       notifications,
       unreadNotificationCount,
       markNotificationRead,
@@ -800,6 +1006,8 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
       markAllNotificationsRead,
       clearAllNotifications,
       profile,
+      isEditingProfileInfo,
+      setIsEditingProfileInfo,
       updateProfile,
       addDocument,
       chatMessages,
