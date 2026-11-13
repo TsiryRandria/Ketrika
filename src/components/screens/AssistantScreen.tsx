@@ -1,381 +1,277 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { useApp } from '../../context/AppContext';
-import { 
-  Bot, 
-  Sparkles, 
-  History, 
-  Send, 
-  Paperclip, 
-  Mic, 
-  Briefcase, 
-  Plus, 
-  Trash2, 
-  Lightbulb, 
-  CheckCircle2, 
-  Folder, 
-  ListOrdered, 
-  BarChart3, 
-  Smile, 
-  ChevronRight,
-  Loader2,
-  StopCircle
-} from 'lucide-react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { AudioLines, Ear, History, Plus, X } from 'lucide-react';
+import { Bot } from 'lucide-react';
+import { useAssistant } from '../assistant/useAssistant';
+import { MessageBubble, ActionCards } from '../assistant/MessageBubble';
+import { Markdown } from '../assistant/Markdown';
+import { BriefingCard } from '../assistant/BriefingCard';
+import { Composer } from '../assistant/Composer';
+import { ConversationList } from '../assistant/ConversationList';
+import { VoiceMode } from '../assistant/VoiceMode';
+import { VoiceOrb } from '../assistant/VoiceOrb';
+import { useWakeWord } from '../assistant/useWakeWord';
+import { hasSpeechSynthesis, speakText, speechRecognitionCtor, stopSpeaking } from '../assistant/voiceUtils';
+import type { AssistantAttachment, AssistantMessage } from '../assistant/types';
+
+const WAKE_KEY = 'ketrika_assistant_wake_v1';
+
+/** Hauteur du bloc = viewport visible (dvh / visualViewport, clavier Android inclus) moins l'en-tête et la barre du bas. */
+const useShellHeight = (ref: React.RefObject<HTMLDivElement | null>) => {
+  const [height, setHeight] = useState<number | undefined>(undefined);
+  useLayoutEffect(() => {
+    const measure = () => {
+      const el = ref.current;
+      if (!el) return;
+      const vv = window.visualViewport;
+      const vh = vv?.height ?? window.innerHeight;
+      const keyboardOpen = Boolean(vv && window.innerHeight - vv.height > 140);
+      const top = el.getBoundingClientRect().top;
+      const reserve = keyboardOpen ? 8 : window.innerWidth < 768 ? 96 : 32;
+      setHeight(Math.max(460, Math.round(vh - Math.max(top, 0) - reserve)));
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    window.visualViewport?.addEventListener('resize', measure);
+    return () => {
+      window.removeEventListener('resize', measure);
+      window.visualViewport?.removeEventListener('resize', measure);
+    };
+  }, [ref]);
+  return height;
+};
 
 export const AssistantScreen: React.FC = () => {
-  const { 
-    chatMessages, 
-    sendChatMessage, 
-    clearChat, 
-    isGeneratingAI,
-    projects,
-    tasks,
-    currentBalance 
-  } = useApp();
+  const a = useAssistant();
+  const shellRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const height = useShellHeight(shellRef);
 
-  const [inputText, setInputText] = useState('');
-  const [isRecording, setIsRecording] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [draft, setDraft] = useState('');
+  const [attachments, setAttachments] = useState<AssistantAttachment[]>([]);
+  const [notice, setNotice] = useState('');
+  const [voiceOpen, setVoiceOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [speakingId, setSpeakingId] = useState<string | null>(null);
+  const [wakeEnabled, setWakeEnabled] = useState<boolean>(() => {
+    try { return localStorage.getItem(WAKE_KEY) === '1'; } catch { return false; }
+  });
+  const idleLevel = useRef(0);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  const flash = useCallback((msg: string) => { setNotice(msg); setTimeout(() => setNotice(''), 4500); }, []);
+
+  /* Défilement : on suit le bas seulement si l'utilisateur y est déjà */
+  const nearBottom = useRef(true);
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (el) nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
   };
-
   useEffect(() => {
-    scrollToBottom();
-  }, [chatMessages, isGeneratingAI]);
+    const el = scrollRef.current;
+    if (el && nearBottom.current) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+  }, [a.messages.length, a.streamText, a.liveActions.length, a.busy]);
+  useEffect(() => { nearBottom.current = true; }, [a.activeId]);
 
-  const handleSend = async (textToSend?: string) => {
-    const text = textToSend || inputText;
-    if (!text.trim() || isGeneratingAI) return;
-    setInputText('');
-    await sendChatMessage(text);
+  useEffect(() => () => stopSpeaking(), []);
+
+  /* « Hey Ketrika » : actif seulement si la page est ouverte et le mode vocal fermé */
+  const wake = useWakeWord(
+    wakeEnabled && !voiceOpen,
+    () => setVoiceOpen(true),
+    (reason) => {
+      setWakeEnabled(false);
+      try { localStorage.setItem(WAKE_KEY, '0'); } catch { /* ignore */ }
+      flash(reason === 'permission' ? "Micro refusé : l'activation « Hey Ketrika » est désactivée." : "Ce navigateur ne gère pas la reconnaissance vocale (essayez Chrome ou Edge).");
+    },
+  );
+  const toggleWake = () => {
+    if (!speechRecognitionCtor()) { flash("Ce navigateur ne gère pas la reconnaissance vocale (essayez Chrome ou Edge)."); return; }
+    const next = !wakeEnabled;
+    setWakeEnabled(next);
+    try { localStorage.setItem(WAKE_KEY, next ? '1' : '0'); } catch { /* ignore */ }
   };
 
-  const handleSuggestionClick = (promptText: string) => {
-    handleSend(promptText);
+  const doSend = useCallback((text?: string) => {
+    const t = (text ?? draft).trim();
+    if (a.busy) return;
+    if (!t && !attachments.length) return;
+    const atts = text === undefined ? attachments : [];
+    setDraft('');
+    if (text === undefined) setAttachments([]);
+    void a.send(t, atts);
+  }, [a, draft, attachments]);
+
+  const onSuggestion = (prompt: string) => {
+    if (prompt.trim().endsWith(':')) { setDraft(`${prompt.trim()} `); return; }
+    doSend(prompt);
   };
 
-  // Web Speech API Voice Recognition (with fallback)
-  const toggleSpeech = () => {
-    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-      // Fallback simulation
-      setInputText("Bonjour Ketrika, peux-tu faire un résumé de mes tâches en cours ?");
-      return;
-    }
-
-    try {
-      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      const recognition = new SpeechRecognition();
-      recognition.lang = 'fr-FR';
-      recognition.continuous = false;
-
-      if (!isRecording) {
-        setIsRecording(true);
-        recognition.start();
-
-        recognition.onresult = (event: any) => {
-          const transcript = event.results[0][0].transcript;
-          setInputText(transcript);
-          setIsRecording(false);
-        };
-
-        recognition.onerror = () => {
-          setIsRecording(false);
-        };
-
-        recognition.onend = () => {
-          setIsRecording(false);
-        };
-      } else {
-        setIsRecording(false);
-      }
-    } catch {
-      setIsRecording(false);
-    }
+  const onSpeak = (m: AssistantMessage) => {
+    if (speakingId === m.id) { stopSpeaking(); setSpeakingId(null); return; }
+    if (!hasSpeechSynthesis()) { flash("La lecture vocale n'est pas disponible sur ce navigateur."); return; }
+    setSpeakingId(m.id);
+    speakText(m.text, { onEnd: () => setSpeakingId((cur) => (cur === m.id ? null : cur)) });
   };
 
-  const suggestions = [
-    { text: 'Générer des idées', icon: Lightbulb },
-    { text: 'Aider à organiser mes tâches', icon: CheckCircle2 },
-    { text: 'Assistance dans mes projets', icon: Folder },
-    { text: 'Créer une liste de tâches', icon: ListOrdered },
-    { text: 'Résumé mes activités', icon: BarChart3 },
-    { text: 'Conseils de productivité', icon: Sparkles },
-  ];
-
-  const conversationHistory = [
-    { title: 'Conseils pour mieux organiser...', date: "Aujourd'hui 08:30" },
-    { title: 'Résumé de mes projets', date: 'Hier 14:20' },
-    { title: 'Idées de projets', date: '16/04/2025 10:15' },
-  ];
+  const lastAssistantIdx = a.messages.map((m) => m.role).lastIndexOf('assistant');
+  const isEmpty = a.messages.length === 0;
+  const convList = (
+    <ConversationList
+      conversations={a.conversations}
+      activeId={a.activeId}
+      disabled={a.busy}
+      onNew={() => { a.newConversation(); setDrawerOpen(false); }}
+      onOpen={(id) => { a.openConversation(id); setDrawerOpen(false); }}
+      onRename={a.renameConversation}
+      onDelete={a.deleteConversation}
+    />
+  );
 
   return (
-    <div className="space-y-4 sm:space-y-6 pb-28 md:pb-8 animate-in fade-in duration-200">
-      
-      {/* Responsive Split on PC/Tablet: Sidebar for Suggestions & History + Central Chat Room */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        
-        {/* Left Column: Mascot Greeting + Suggestions + History (Matching page 6 top) */}
-        <div className="lg:col-span-5 space-y-4">
-          
-          {/* Glowing 3D Robot Mascot Card (Matching page 6) */}
-          <div className="glass-panel rounded-3xl p-5 sm:p-6 border border-emerald-500/30 text-center relative overflow-hidden flex flex-col items-center">
-            
-            {/* Robot Mascot in Radiant Green Neon Circle */}
-            <div className="relative w-28 h-28 sm:w-32 sm:h-32 rounded-full p-2 border-2 border-emerald-400/80 shadow-[0_0_30px_rgba(0,230,118,0.5)] mb-3 bg-gradient-to-b from-emerald-950/80 to-slate-950 flex items-center justify-center">
-              
-              {/* Cute futuristic SVG Robot */}
-              <div className="relative w-full h-full rounded-full bg-emerald-900/40 flex items-center justify-center">
-                <svg width="74" height="74" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  {/* Robot head */}
-                  <rect x="25" y="28" width="50" height="38" rx="14" fill="#E2F7ED" stroke="#00E676" strokeWidth="3" />
-                  {/* Visor face */}
-                  <rect x="31" y="36" width="38" height="22" rx="8" fill="#042F24" />
-                  {/* Glowing Cyan Eyes */}
-                  <circle cx="42" cy="47" r="4.5" fill="#38BDF8" className="drop-shadow-[0_0_6px_#38BDF8]" />
-                  <circle cx="58" cy="47" r="4.5" fill="#38BDF8" className="drop-shadow-[0_0_6px_#38BDF8]" />
-                  {/* Antenna */}
-                  <path d="M50 14V28M50 14C52.2091 14 54 12.2091 54 10C54 7.79086 52.2091 6 50 6C47.7909 6 46 7.79086 46 10C46 12.2091 47.7909 14 50 14Z" stroke="#00E676" strokeWidth="3" strokeLinecap="round" />
-                  {/* Cheerful mouth curve */}
-                  <path d="M47 53Q50 55 53 53" stroke="#34D399" strokeWidth="2" strokeLinecap="round" />
-                  {/* Body collar */}
-                  <path d="M35 70C35 67 65 67 65 70L70 88C70 91 30 91 30 88L35 70Z" fill="#E2F7ED" stroke="#00E676" strokeWidth="2.5" />
-                  <circle cx="50" cy="78" r="3" fill="#00E676" className="drop-shadow-[0_0_5px_#00E676]" />
-                </svg>
-              </div>
+    <div ref={shellRef} className="assistant-shell relative animate-in fade-in duration-200" style={height ? { height } : { height: 'calc(100dvh - 8rem)' }}>
+      <div className="grid grid-cols-1 lg:grid-cols-[300px_minmax(0,1fr)] gap-4 h-full">
 
-              {/* Status indicator dot */}
-              <div className="absolute bottom-1 right-2 w-4 h-4 rounded-full bg-emerald-400 border-2 border-slate-950 shadow-[0_0_8px_#34d399]" />
-            </div>
-
-            <h2 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight">
-              Assistant IA
-            </h2>
-            <div className="flex items-center justify-center gap-1.5 mt-0.5">
-              <span className="text-sm font-bold text-emerald-300">Bonjour !</span>
-              <span>👋</span>
-            </div>
-            <p className="text-xs text-emerald-200/80 mt-1 max-w-xs leading-relaxed">
-              Je suis votre assistant intelligent. Comment puis-je vous aider aujourd'hui ?
-            </p>
-          </div>
-
-          {/* Suggestions de questions (Matching page 6) */}
-          <div className="glass-panel rounded-3xl p-5 border border-emerald-500/30">
-            <div className="flex items-center gap-2 mb-3 text-emerald-300">
-              <Sparkles className="w-4 h-4 text-emerald-400" />
-              <h3 className="font-bold text-xs uppercase tracking-wider">
-                Suggestions de questions
-              </h3>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              {suggestions.map((item, idx) => {
-                const Icon = item.icon;
-                return (
-                  <button
-                    key={idx}
-                    onClick={() => handleSuggestionClick(item.text)}
-                    className="p-2.5 rounded-2xl glass-panel-subtle border border-emerald-500/25 hover:border-emerald-400/60 hover:bg-emerald-900/40 text-left transition-all group flex flex-col justify-between"
-                  >
-                    <Icon className="w-4 h-4 text-emerald-400 mb-1.5 group-hover:scale-110 transition-transform" />
-                    <span className="text-[11px] font-semibold text-white/90 leading-tight">
-                      {item.text}
-                    </span>
-                  </button>
-                );
-              })}
+        {/* Colonne gauche (desktop/tablette large) */}
+        <aside className="hidden lg:flex flex-col gap-3 min-h-0" aria-label="Conversations">
+          <div className="glass-panel rounded-3xl p-4 border border-emerald-500/30 flex items-center gap-3 shrink-0">
+            <div className="w-16 h-16 shrink-0"><VoiceOrb state="idle" levelRef={idleLevel} micLive={false} /></div>
+            <div className="min-w-0">
+              <h2 className="text-base font-extrabold text-white leading-tight">Assistant IA</h2>
+              <p className="text-[11px] text-emerald-300/80 leading-snug">Ketrika IA — votre Jarvis personnel</p>
             </div>
           </div>
-
-          {/* Historique des conversations (Matching page 6) */}
-          <div className="glass-panel rounded-3xl p-5 border border-emerald-500/30">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2 text-emerald-300">
-                <History className="w-4 h-4 text-emerald-400" />
-                <h3 className="font-bold text-xs uppercase tracking-wider">
-                  Historique des conversations
-                </h3>
-              </div>
-              <button 
-                onClick={clearChat}
-                className="text-emerald-400/60 hover:text-rose-400 p-1 rounded-lg transition-colors"
-                title="Vider l'historique"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
+          <div className="glass-panel rounded-3xl p-4 border border-emerald-500/30 flex-1 min-h-0 flex flex-col">
+            <div className="flex items-center gap-2 mb-3 text-emerald-300 shrink-0">
+              <History className="w-4 h-4 text-emerald-400" aria-hidden />
+              <h3 className="font-bold text-xs uppercase tracking-wider">Conversations</h3>
             </div>
+            <div className="flex-1 min-h-0">{convList}</div>
+          </div>
+          <WakeToggle enabled={wakeEnabled} listening={wake.listening} onToggle={toggleWake} />
+        </aside>
 
-            <div className="space-y-2">
-              {conversationHistory.map((item, idx) => (
-                <div
-                  key={idx}
-                  onClick={() => handleSend(item.title)}
-                  className="flex items-center justify-between p-2.5 rounded-2xl bg-emerald-950/60 border border-emerald-500/20 hover:border-emerald-400/50 hover:bg-emerald-900/40 cursor-pointer transition-all group"
-                >
-                  <div className="min-w-0 pr-2">
-                    <p className="text-xs font-semibold text-white truncate group-hover:text-emerald-300 transition-colors">
-                      {item.title}
+        {/* Zone de chat */}
+        <section className="glass-panel rounded-3xl border border-emerald-500/30 shadow-[0_0_30px_rgba(16,185,129,0.2)] flex flex-col min-h-0 overflow-hidden relative" aria-label="Discussion avec Ketrika IA">
+          <header className="flex items-center gap-2 px-4 py-3 border-b border-emerald-500/20 shrink-0">
+            <button type="button" onClick={() => setDrawerOpen(true)} className="assistant-round-btn !w-9 !h-9 lg:hidden" aria-label="Ouvrir la liste des conversations"><History className="w-4 h-4" /></button>
+            <div className="min-w-0 flex-1">
+              <h2 className="text-sm font-extrabold text-white truncate">{a.active?.title || 'Nouvelle conversation'}</h2>
+              <p className="text-[10px] text-emerald-300/70">{a.busy ? (a.status || 'Ketrika écrit…') : 'Ketrika IA'}</p>
+            </div>
+            <button type="button" onClick={a.newConversation} disabled={a.busy} className="assistant-round-btn !w-9 !h-9 lg:hidden" aria-label="Nouvelle conversation"><Plus className="w-4 h-4" /></button>
+            <button type="button" onClick={() => setVoiceOpen(true)} disabled={a.busy} className="inline-flex items-center gap-1.5 px-3 h-9 rounded-xl bg-cyan-500/15 border border-cyan-400/40 text-cyan-100 text-xs font-bold hover:bg-cyan-500/25 transition-colors disabled:opacity-50" aria-label="Ouvrir le mode vocal Jarvis">
+              <AudioLines className="w-4 h-4" aria-hidden /><span className="hidden sm:inline">Mode vocal</span>
+            </button>
+          </header>
+
+          <div ref={scrollRef} onScroll={onScroll} className="flex-1 min-h-0 overflow-y-auto no-scrollbar p-4 space-y-4" aria-live="polite" aria-relevant="additions">
+            {!a.loaded ? (
+              <p className="text-xs text-emerald-300/70">Chargement…</p>
+            ) : (
+              <>
+                <BriefingCard briefing={a.briefing} onAsk={(p) => doSend(p)} disabled={a.busy} />
+
+                {isEmpty && (
+                  <div className="text-center py-4">
+                    <div className="w-20 h-20 mx-auto"><VoiceOrb state="idle" levelRef={idleLevel} micLive={false} /></div>
+                    <p className="text-lg font-extrabold text-white mt-2">Bonjour {a.snapshot.profile.name?.split(' ')[0] || ''} 👋</p>
+                    <p className="text-xs text-emerald-200/80 mt-1 max-w-sm mx-auto leading-relaxed">
+                      Je peux créer vos tâches, notes, projets et transactions, ouvrir un écran ou analyser vos données. Écrivez ou parlez-moi.
                     </p>
-                    <p className="text-[10px] text-emerald-400/60 mt-0.5">{item.date}</p>
                   </div>
-                  <ChevronRight className="w-4 h-4 text-emerald-400/60 group-hover:translate-x-1 transition-transform shrink-0" />
-                </div>
-              ))}
-            </div>
-          </div>
+                )}
 
-        </div>
+                {a.messages.map((m, i) => (
+                  <MessageBubble
+                    key={m.id}
+                    msg={m}
+                    canRegenerate={i === lastAssistantIdx && i > 0 && !a.busy && !m.actions?.length}
+                    isSpeaking={speakingId === m.id}
+                    onRegenerate={() => void a.regenerate()}
+                    onSpeak={onSpeak}
+                    onUndo={a.undoAction}
+                  />
+                ))}
 
-        {/* Right Column: Live Chat Interface */}
-        <div className="lg:col-span-7">
-          <div className="glass-panel rounded-3xl p-5 border border-emerald-500/30 shadow-[0_0_30px_rgba(16,185,129,0.2)] flex flex-col h-[650px] justify-between">
-            
-            {/* Chat Messages Stream */}
-            <div className="flex-1 overflow-y-auto no-scrollbar space-y-4 pr-1 mb-4">
-              {chatMessages.map((msg) => {
-                const isAssistant = msg.role === 'assistant';
-                return (
-                  <div
-                    key={msg.id}
-                    className={`flex items-start gap-3 ${isAssistant ? '' : 'flex-row-reverse'}`}
-                  >
-                    {/* Avatar */}
-                    {isAssistant ? (
-                      <div className="w-8 h-8 rounded-full bg-emerald-950 border border-emerald-400/60 flex items-center justify-center text-emerald-300 shrink-0 shadow-[0_0_8px_#34d399]">
-                        <Bot className="w-4 h-4" />
-                      </div>
-                    ) : (
-                      <div className="w-8 h-8 rounded-full bg-emerald-500 text-slate-950 font-bold flex items-center justify-center shrink-0">
-                        J
-                      </div>
-                    )}
-
-                    {/* Speech Bubble */}
-                    <div
-                      className={`max-w-[85%] rounded-3xl p-3.5 text-xs sm:text-sm leading-relaxed ${
-                        isAssistant
-                          ? 'glass-panel border-emerald-500/30 text-emerald-100 rounded-tl-sm'
-                          : 'bg-emerald-500 text-slate-950 font-medium rounded-tr-sm shadow-[0_0_15px_rgba(0,230,118,0.3)]'
-                      }`}
-                    >
-                      <div className="whitespace-pre-wrap">{msg.text}</div>
-                      <span className={`block text-[10px] mt-1.5 ${isAssistant ? 'text-emerald-400/60' : 'text-slate-800/70'} text-right`}>
-                        {msg.timestamp}
-                      </span>
+                {a.busy && (
+                  <div className="flex items-start gap-2.5 assistant-msg-in">
+                    <div className="assistant-avatar" aria-hidden><Bot className="w-4 h-4" /></div>
+                    <div className="min-w-0 max-w-[88%] glass-panel rounded-3xl rounded-tl-sm px-3.5 py-2.5 text-[13px] sm:text-sm text-emerald-50 leading-relaxed">
+                      {a.streamText ? <Markdown text={a.streamText} /> : (
+                        <span className="inline-flex items-center gap-2 text-emerald-300 text-xs">
+                          <span className="assistant-typing" aria-hidden><span /><span /><span /></span>
+                          {a.status || 'Ketrika réfléchit…'}
+                        </span>
+                      )}
+                      {a.liveActions.length > 0 && <ActionCards actions={a.liveActions} />}
                     </div>
                   </div>
-                );
-              })}
-
-              {isGeneratingAI && (
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-full bg-emerald-950 border border-emerald-400/60 flex items-center justify-center text-emerald-300 shrink-0">
-                    <Bot className="w-4 h-4 animate-spin" />
-                  </div>
-                  <div className="glass-panel rounded-2xl px-4 py-2.5 text-xs text-emerald-300 flex items-center gap-2">
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    <span>Ketrika IA réfléchit...</span>
-                  </div>
-                </div>
-              )}
-
-              <div ref={messagesEndRef} />
-            </div>
-
-            {/* Bottom Input Area & Controls (Matching page 6 bottom) */}
-            <div className="space-y-3 pt-3 border-t border-emerald-500/20">
-              
-              {/* Main Input Row */}
-              <div className="relative flex items-center gap-2">
-                <input
-                  type="text"
-                  placeholder="Tapez votre message ici..."
-                  value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                  disabled={isGeneratingAI}
-                  className="flex-1 px-4 py-3 rounded-2xl glass-input text-sm placeholder:text-emerald-300/40 focus:ring-1 focus:ring-emerald-400"
-                />
-
-                {/* Attachment icon */}
-                <button
-                  type="button"
-                  onClick={() => alert('Sélection de fichier : Vous pouvez joindre des documents, images ou rapports.')}
-                  className="p-2.5 rounded-2xl glass-panel-subtle text-emerald-300 hover:text-white transition-colors shrink-0"
-                  title="Joindre un fichier"
-                >
-                  <Paperclip className="w-4 h-4" />
-                </button>
-
-                {/* Send Glowing Button */}
-                <button
-                  type="button"
-                  onClick={() => handleSend()}
-                  disabled={isGeneratingAI || !inputText.trim()}
-                  className="p-3 rounded-2xl bg-gradient-to-tr from-emerald-500 to-teal-400 text-slate-950 font-bold shadow-[0_0_15px_rgba(0,230,118,0.5)] hover:shadow-[0_0_25px_rgba(0,230,118,0.8)] transition-all shrink-0 disabled:opacity-50"
-                  title="Envoyer"
-                >
-                  <Send className="w-4 h-4 stroke-[2.5]" />
-                </button>
-              </div>
-
-              {/* Voice and File Action Pills (Matching page 6) */}
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={toggleSpeech}
-                  className={`py-2 px-3 rounded-xl border text-xs font-semibold flex items-center justify-center gap-2 transition-all ${
-                    isRecording 
-                      ? 'bg-rose-500/30 border-rose-400 text-rose-300 animate-pulse' 
-                      : 'glass-panel-subtle border-emerald-500/25 text-emerald-200 hover:text-white hover:bg-emerald-900/40'
-                  }`}
-                >
-                  <Mic className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>{isRecording ? 'Écoute en cours...' : 'Parler'}</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => alert('Gestionnaire de fichiers Ketrika connecté.')}
-                  className="py-2 px-3 rounded-xl glass-panel-subtle border border-emerald-500/25 text-emerald-200 hover:text-white hover:bg-emerald-900/40 text-xs font-semibold flex items-center justify-center gap-2 transition-all"
-                >
-                  <Briefcase className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Joindre un fichier</span>
-                </button>
-              </div>
-
-              {/* Action Buttons: Nouvelle conversation & Supprimer cette conversation (Matching page 6) */}
-              <div className="space-y-2 pt-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    clearChat();
-                    setInputText('');
-                  }}
-                  className="w-full py-2.5 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-400 text-slate-950 font-bold text-xs shadow-[0_0_18px_rgba(0,230,118,0.4)] hover:shadow-[0_0_25px_rgba(0,230,118,0.7)] transition-all flex items-center justify-center gap-2"
-                >
-                  <Plus className="w-4 h-4 stroke-[3]" />
-                  <span>Nouvelle conversation</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={clearChat}
-                  className="w-full py-2.5 rounded-2xl glass-panel-subtle border border-emerald-500/25 hover:border-rose-500/40 hover:bg-rose-500/10 text-emerald-300/80 hover:text-rose-300 font-semibold text-xs transition-all flex items-center justify-center gap-2"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Supprimer cette conversation</span>
-                </button>
-              </div>
-
-            </div>
-
+                )}
+              </>
+            )}
           </div>
-        </div>
 
+          <div className="px-3 pb-3 shrink-0 space-y-2">
+            {notice && <p role="alert" className="text-[11px] px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-400/40 text-amber-100">{notice}</p>}
+            {a.suggestions.length > 0 && (
+              <div className="flex gap-2 overflow-x-auto no-scrollbar" aria-label="Suggestions">
+                {a.suggestions.map((s) => (
+                  <button key={s.label} type="button" disabled={a.busy} onClick={() => onSuggestion(s.prompt)} className="assistant-chip">{s.label}</button>
+                ))}
+              </div>
+            )}
+            <Composer
+              value={draft}
+              onChange={setDraft}
+              attachments={attachments}
+              onAttachmentsChange={setAttachments}
+              onSend={() => doSend()}
+              onStop={a.stop}
+              onOpenVoice={() => setVoiceOpen(true)}
+              busy={a.busy}
+              onNotice={flash}
+            />
+          </div>
+
+          {voiceOpen && (
+            <VoiceMode
+              busy={a.busy}
+              send={(t) => a.send(t)}
+              setReplyListener={a.setReplyListener}
+              onClose={() => { stopSpeaking(); setVoiceOpen(false); }}
+            />
+          )}
+        </section>
       </div>
 
+      {/* Tiroir des conversations (mobile / tablette étroite) */}
+      {drawerOpen && (
+        <div className="absolute inset-0 z-20 lg:hidden flex" role="dialog" aria-modal="true" aria-label="Conversations">
+          <div className="w-[88%] max-w-sm glass-panel rounded-3xl p-4 border border-emerald-400/40 flex flex-col min-h-0 animate-in slide-in-from-left duration-200">
+            <div className="flex items-center justify-between mb-3 shrink-0">
+              <h3 className="font-bold text-xs uppercase tracking-wider text-emerald-300">Conversations</h3>
+              <button type="button" onClick={() => setDrawerOpen(false)} className="assistant-icon-btn" aria-label="Fermer"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="flex-1 min-h-0">{convList}</div>
+            <div className="mt-3 shrink-0"><WakeToggle enabled={wakeEnabled} listening={wake.listening} onToggle={toggleWake} /></div>
+          </div>
+          <button type="button" className="flex-1" onClick={() => setDrawerOpen(false)} aria-label="Fermer la liste" />
+        </div>
+      )}
     </div>
   );
 };
+
+const WakeToggle: React.FC<{ enabled: boolean; listening: boolean; onToggle: () => void }> = ({ enabled, listening, onToggle }) => (
+  <div className="glass-panel-subtle rounded-2xl p-3 border border-emerald-500/25 shrink-0">
+    <button type="button" onClick={onToggle} role="switch" aria-checked={enabled} className="w-full flex items-center gap-2 text-left">
+      <Ear className={`w-4 h-4 shrink-0 ${listening ? 'text-cyan-300' : 'text-emerald-400'}`} aria-hidden />
+      <span className="flex-1 text-xs font-semibold text-white">« Hey Ketrika »</span>
+      <span className={`w-9 h-5 rounded-full p-0.5 transition-colors ${enabled ? 'bg-emerald-500' : 'bg-emerald-950 border border-emerald-500/40'}`}>
+        <span className={`block w-4 h-4 rounded-full bg-white transition-transform ${enabled ? 'translate-x-4' : ''}`} />
+      </span>
+    </button>
+    <p className="text-[10px] text-emerald-300/60 mt-1.5 leading-snug">
+      Écoute uniquement tant que cette page est ouverte et visible (indicateur micro du navigateur affiché).
+    </p>
+  </div>
+);
