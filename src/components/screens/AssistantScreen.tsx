@@ -36,9 +36,26 @@ import {
   estimateBase64Bytes,
   formatBytesFr,
 } from '../../shared/attachmentLimits';
+import {
+  DEFAULT_SILENCE_TIMEOUT_MS,
+  VoiceTurnController,
+} from '../../shared/voiceSpeechController';
 
 type AssistantMode = 'voice' | 'text';
 type VoicePhase = 'idle' | 'listening' | 'thinking' | 'speaking';
+type VoiceTriggerMode = 'manual' | 'auto';
+
+const VOICE_TRIGGER_MODE_STORAGE_KEY = 'ketrika_voice_trigger_mode';
+
+const loadSavedVoiceTriggerMode = (): VoiceTriggerMode => {
+  if (typeof window === 'undefined') return 'manual';
+  try {
+    const saved = window.localStorage.getItem(VOICE_TRIGGER_MODE_STORAGE_KEY);
+    return saved === 'auto' ? 'auto' : 'manual';
+  } catch {
+    return 'manual';
+  }
+};
 
 const ACCEPTED_FILE_TYPES =
   'image/png,image/jpeg,image/webp,image/gif,.txt,.md,.markdown,.csv,.json,.log,.xml,.yaml,.yml,.html,.htm,.css,.js,.jsx,.ts,.tsx,.py,.sql,text/*';
@@ -132,9 +149,13 @@ export const AssistantScreen: React.FC = () => {
   );
 
   // État du Mode Vocal (Page 1)
+  const [voiceTriggerMode, setVoiceTriggerMode] = useState<VoiceTriggerMode>(
+    loadSavedVoiceTriggerMode
+  );
   const [isVoiceSessionActive, setIsVoiceSessionActive] = useState(false);
   const [voicePhase, setVoicePhase] = useState<VoicePhase>('idle');
   const [liveTranscript, setLiveTranscript] = useState('');
+  const [preservedTranscript, setPreservedTranscript] = useState('');
   const [spokenReply, setSpokenReply] = useState('');
   const [voiceError, setVoiceError] = useState<string | null>(null);
 
@@ -148,14 +169,28 @@ export const AssistantScreen: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Refs synchrones pour piloter la boucle vocale sans closures obsolètes
+  const voiceTriggerModeRef = useRef<VoiceTriggerMode>(voiceTriggerMode);
+  const startListeningCycleRef = useRef<((seedTranscript?: string) => void) | null>(null);
   const voiceSessionRef = useRef(false);
   const voiceConversationSessionIdRef = useRef<string | null>(null);
   const recognitionRef = useRef<any>(null);
-  const finalTranscriptRef = useRef('');
+  const turnControllerRef = useRef<VoiceTurnController | null>(null);
+  const isSubmittingTurnRef = useRef(false);
+  const voiceTurnSeqRef = useRef(0);
   const pendingAttachmentsRef = useRef<PendingAssistantAttachment[]>([]);
   const restartTimerRef = useRef<number | null>(null);
   const ttsKeepAliveRef = useRef<number | null>(null);
-  const networkErrorCountRef = useRef(0);
+
+  useEffect(() => {
+    voiceTriggerModeRef.current = voiceTriggerMode;
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.setItem(VOICE_TRIGGER_MODE_STORAGE_KEY, voiceTriggerMode);
+      } catch {
+        // Ignorer si stockage bloqué
+      }
+    }
+  }, [voiceTriggerMode]);
 
   useEffect(() => {
     pendingAttachmentsRef.current = pendingAttachments;
@@ -172,52 +207,67 @@ export const AssistantScreen: React.FC = () => {
     }
   }, []);
 
-  const stopVoiceSession = useCallback(() => {
-    voiceSessionRef.current = false;
-    voiceConversationSessionIdRef.current = null;
-    finalTranscriptRef.current = '';
-    networkErrorCountRef.current = 0;
-    clearVoiceTimers();
-
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.onresult = null;
-        recognitionRef.current.onerror = null;
-        recognitionRef.current.onend = null;
-        recognitionRef.current.abort();
-      } catch {
-        // Ignorer si déjà arrêté
-      }
-      recognitionRef.current = null;
+  const abortActiveRecognitionInstance = useCallback(() => {
+    if (!recognitionRef.current) return;
+    try {
+      recognitionRef.current.onresult = null;
+      recognitionRef.current.onerror = null;
+      recognitionRef.current.onend = null;
+      recognitionRef.current.abort();
+    } catch {
+      // Ignorer si déjà arrêté
     }
+    recognitionRef.current = null;
+  }, []);
 
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      try {
-        window.speechSynthesis.cancel();
-      } catch {
-        // Ignorer erreur éventuelle de synthèse vocale
+  const stopVoiceSession = useCallback(
+    (preserveCapturedOnError = false) => {
+      voiceSessionRef.current = false;
+      voiceTurnSeqRef.current += 1;
+      isSubmittingTurnRef.current = false;
+
+      if (!preserveCapturedOnError) {
+        voiceConversationSessionIdRef.current = null;
+        setPreservedTranscript('');
+        setLiveTranscript('');
       }
-    }
 
-    setIsVoiceSessionActive(false);
-    setVoicePhase('idle');
-    setLiveTranscript('');
-  }, [clearVoiceTimers]);
+      if (turnControllerRef.current) {
+        turnControllerRef.current.abortWithoutSubmit();
+        turnControllerRef.current = null;
+      }
+
+      clearVoiceTimers();
+      abortActiveRecognitionInstance();
+
+      if (typeof window !== 'undefined' && typeof window.speechSynthesis !== 'undefined') {
+        try {
+          window.speechSynthesis.cancel();
+        } catch {
+          // Ignorer erreur éventuelle de synthèse vocale
+        }
+      }
+
+      setIsVoiceSessionActive(false);
+      setVoicePhase('idle');
+    },
+    [abortActiveRecognitionInstance, clearVoiceTimers]
+  );
 
   // Nettoyage complet à la fermeture du composant
   useEffect(() => {
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+    if (typeof window !== 'undefined' && typeof window.speechSynthesis !== 'undefined') {
       window.speechSynthesis.getVoices();
     }
     return () => {
-      stopVoiceSession();
+      stopVoiceSession(false);
     };
   }, [stopVoiceSession]);
 
   useEffect(() => {
     if (!requestedAssistantMode) return;
     if (requestedAssistantMode === 'text' && voiceSessionRef.current) {
-      stopVoiceSession();
+      stopVoiceSession(false);
     }
     setActiveMode(requestedAssistantMode);
     clearRequestedAssistantMode();
@@ -229,17 +279,38 @@ export const AssistantScreen: React.FC = () => {
     }
   }, [chatMessages, isGeneratingAI, activeMode]);
 
-  const startListeningRef = useRef<() => void>(() => {});
-
   const speakResponse = useCallback(
-    (rawReply: string) => {
-      if (!voiceSessionRef.current) return;
+    (rawReply: string, expectedTurnSeq: number) => {
+      if (!voiceSessionRef.current || voiceTurnSeqRef.current !== expectedTurnSeq) return;
+
+      const finishSpeakTurn = () => {
+        clearVoiceTimers();
+        if (
+          voiceSessionRef.current &&
+          voiceTurnSeqRef.current === expectedTurnSeq &&
+          voiceTriggerModeRef.current === 'auto'
+        ) {
+          // Mode automatique : reprend l'écoute après la réponse vocale sans devoir recliquer
+          restartTimerRef.current = window.setTimeout(() => {
+            if (
+              voiceSessionRef.current &&
+              voiceTurnSeqRef.current === expectedTurnSeq &&
+              voiceTriggerModeRef.current === 'auto'
+            ) {
+              startListeningCycleRef.current?.('');
+            }
+          }, 250);
+          return;
+        }
+
+        voiceSessionRef.current = false;
+        setIsVoiceSessionActive(false);
+        setVoicePhase('idle');
+      };
 
       const spokenText = cleanTextForSpeech(rawReply);
       if (!spokenText) {
-        if (voiceSessionRef.current) {
-          restartTimerRef.current = window.setTimeout(() => startListeningRef.current(), 250);
-        }
+        finishSpeakTurn();
         return;
       }
 
@@ -247,10 +318,9 @@ export const AssistantScreen: React.FC = () => {
       setVoicePhase('speaking');
 
       if (typeof window === 'undefined' || typeof window.speechSynthesis === 'undefined') {
-        // Navigateur sans SpeechSynthesis : pause de lecture puis reprise de l'écoute
         restartTimerRef.current = window.setTimeout(() => {
-          if (voiceSessionRef.current) {
-            startListeningRef.current();
+          if (voiceTurnSeqRef.current === expectedTurnSeq) {
+            finishSpeakTurn();
           }
         }, 2000);
         return;
@@ -272,15 +342,14 @@ export const AssistantScreen: React.FC = () => {
         const handleSpeechComplete = () => {
           if (finished) return;
           finished = true;
-          clearVoiceTimers();
-          if (voiceSessionRef.current) {
-            restartTimerRef.current = window.setTimeout(() => {
-              if (voiceSessionRef.current) {
-                startListeningRef.current();
-              }
-            }, 300);
+          if (voiceTurnSeqRef.current === expectedTurnSeq) {
+            finishSpeakTurn();
           } else {
-            setVoicePhase('idle');
+            clearVoiceTimers();
+            if (!voiceSessionRef.current) {
+              setIsVoiceSessionActive(false);
+              setVoicePhase('idle');
+            }
           }
         };
 
@@ -291,7 +360,7 @@ export const AssistantScreen: React.FC = () => {
 
         // Garde-fou pour éviter les coupures silencieuses sous Chromium sur les longues phrases
         ttsKeepAliveRef.current = window.setInterval(() => {
-          if (!voiceSessionRef.current) {
+          if (!voiceSessionRef.current || voiceTurnSeqRef.current !== expectedTurnSeq) {
             clearVoiceTimers();
             return;
           }
@@ -302,12 +371,7 @@ export const AssistantScreen: React.FC = () => {
 
         window.speechSynthesis.speak(utterance);
       } catch {
-        clearVoiceTimers();
-        if (voiceSessionRef.current) {
-          restartTimerRef.current = window.setTimeout(() => startListeningRef.current(), 400);
-        } else {
-          setVoicePhase('idle');
-        }
+        finishSpeakTurn();
       }
     },
     [clearVoiceTimers]
@@ -315,41 +379,58 @@ export const AssistantScreen: React.FC = () => {
 
   const handleVoiceTurn = useCallback(
     async (userSpeech: string) => {
-      if (!voiceSessionRef.current) return;
+      const cleanSpeech = userSpeech.trim();
+      if (!voiceSessionRef.current || !cleanSpeech || isSubmittingTurnRef.current) return;
 
+      isSubmittingTurnRef.current = true;
+      const currentTurnSeq = ++voiceTurnSeqRef.current;
+
+      turnControllerRef.current = null;
+      abortActiveRecognitionInstance();
+      setPreservedTranscript('');
       setVoicePhase('thinking');
-      setLiveTranscript(userSpeech);
+      setLiveTranscript(cleanSpeech);
 
       const attachmentsToSend =
         pendingAttachmentsRef.current.length > 0 ? [...pendingAttachmentsRef.current] : undefined;
 
-      let assistantReply = '';
-      const sent = await sendChatMessage(userSpeech, attachmentsToSend, {
-        voiceMode: true,
-        voiceSessionId: voiceConversationSessionIdRef.current || undefined,
-        onReply: (replyText) => {
-          assistantReply = replyText;
-        },
-      });
+      try {
+        let assistantReply = '';
+        const sent = await sendChatMessage(cleanSpeech, attachmentsToSend, {
+          voiceMode: true,
+          voiceSessionId: voiceConversationSessionIdRef.current || undefined,
+          onReply: (replyText) => {
+            assistantReply = replyText;
+          },
+        });
 
-      if (sent && attachmentsToSend) {
-        setPendingAttachments([]);
-      }
+        if (sent && attachmentsToSend) {
+          setPendingAttachments([]);
+        }
 
-      if (!voiceSessionRef.current) return;
+        if (!voiceSessionRef.current || voiceTurnSeqRef.current !== currentTurnSeq) {
+          return;
+        }
 
-      if (assistantReply) {
-        speakResponse(assistantReply);
-      } else {
-        speakResponse("Je n'ai pas pu obtenir de réponse pour le moment. Pouvez-vous répéter ?");
+        if (assistantReply) {
+          speakResponse(assistantReply, currentTurnSeq);
+        } else {
+          speakResponse(
+            "Je n'ai pas pu obtenir de réponse pour le moment. Pouvez-vous répéter ?",
+            currentTurnSeq
+          );
+        }
+      } finally {
+        isSubmittingTurnRef.current = false;
       }
     },
-    [sendChatMessage, speakResponse]
+    [abortActiveRecognitionInstance, sendChatMessage, speakResponse]
   );
 
-  const startListeningCycle = useCallback(() => {
+  const spawnRecognitionInstance = useCallback(() => {
     if (!voiceSessionRef.current) return;
-    clearVoiceTimers();
+    const controller = turnControllerRef.current;
+    if (!controller || !controller.isListeningActive()) return;
 
     const SpeechRecognition =
       typeof window !== 'undefined'
@@ -360,162 +441,241 @@ export const AssistantScreen: React.FC = () => {
       setVoiceError(
         "La reconnaissance vocale n'est pas prise en charge par ce navigateur. Utilisez Chrome ou Edge, ou passez en Mode texte."
       );
-      stopVoiceSession();
+      stopVoiceSession(false);
       return;
     }
 
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      try {
-        window.speechSynthesis.cancel();
-      } catch {
-        // Ignorer
-      }
-    }
-
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.onresult = null;
-        recognitionRef.current.onerror = null;
-        recognitionRef.current.onend = null;
-        recognitionRef.current.abort();
-      } catch {
-        // Ignorer
-      }
-      recognitionRef.current = null;
-    }
-
-    finalTranscriptRef.current = '';
-    setLiveTranscript('');
-    setVoicePhase('listening');
+    abortActiveRecognitionInstance();
 
     try {
       const recognition = new SpeechRecognition();
       recognition.lang = 'fr-FR';
-      recognition.continuous = false;
+      try {
+        recognition.continuous = true;
+      } catch {
+        recognition.continuous = false;
+      }
       recognition.interimResults = true;
       recognition.maxAlternatives = 1;
       recognitionRef.current = recognition;
 
-      let fatalErrorOccurred = false;
-
       recognition.onresult = (event: any) => {
-        if (!voiceSessionRef.current) return;
-        let interim = '';
-        let finalText = '';
-
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const chunk = event.results[i][0]?.transcript || '';
-          if (event.results[i].isFinal) {
-            finalText += chunk;
-          } else {
-            interim += chunk;
-          }
-        }
-
-        if (finalText.trim()) {
-          finalTranscriptRef.current = `${finalTranscriptRef.current} ${finalText}`.trim();
-          setLiveTranscript(finalTranscriptRef.current);
-          networkErrorCountRef.current = 0;
-        } else if (interim.trim()) {
-          setLiveTranscript(interim.trim());
-        }
+        if (!voiceSessionRef.current || recognitionRef.current !== recognition) return;
+        turnControllerRef.current?.handleRecognitionResults(event?.results);
       };
 
       recognition.onerror = (event: any) => {
-        const errCode = event?.error;
-        if (!voiceSessionRef.current || errCode === 'aborted') return;
-
-        if (
-          errCode === 'not-allowed' ||
-          errCode === 'service-not-allowed' ||
-          errCode === 'audio-capture'
-        ) {
-          fatalErrorOccurred = true;
-          setVoiceError(
-            "Impossible d'accéder au microphone. Vérifiez les permissions de votre navigateur."
-          );
-          stopVoiceSession();
-          return;
-        }
-
-        if (errCode === 'network') {
-          networkErrorCountRef.current += 1;
-          if (networkErrorCountRef.current >= 3) {
-            fatalErrorOccurred = true;
-            setVoiceError(
-              'Le service de reconnaissance vocale du navigateur est temporairement inaccessible.'
-            );
-            stopVoiceSession();
-          }
-        }
+        if (!voiceSessionRef.current || recognitionRef.current !== recognition) return;
+        turnControllerRef.current?.handleRecognitionError(event?.error);
       };
 
       recognition.onend = () => {
         if (recognitionRef.current === recognition) {
           recognitionRef.current = null;
-        }
-        if (fatalErrorOccurred || !voiceSessionRef.current) {
+        } else {
+          // Événement tardif d'une instance déjà remplacée ou annulée : ignorer sans réinitialiser
           return;
         }
-
-        const spoken = finalTranscriptRef.current.trim();
-        if (spoken) {
-          finalTranscriptRef.current = '';
-          void handleVoiceTurn(spoken);
-        } else {
-          // Aucune parole détectée : réactiver l'écoute en continu
-          restartTimerRef.current = window.setTimeout(() => {
-            if (voiceSessionRef.current) {
-              startListeningRef.current();
-            }
-          }, 350);
-        }
+        if (!voiceSessionRef.current) return;
+        turnControllerRef.current?.handleRecognitionEnd();
       };
 
       recognition.start();
     } catch {
-      setVoiceError("Impossible de démarrer l'écoute vocale.");
-      stopVoiceSession();
+      const preserved = controller.getFullTranscript();
+      setPreservedTranscript(preserved);
+      setLiveTranscript(preserved);
+      setVoiceError(
+        preserved
+          ? "L'écoute vocale s'est interrompue. Vos phrases déjà capturées ont été conservées."
+          : "Impossible de démarrer l'écoute vocale."
+      );
+      stopVoiceSession(Boolean(preserved));
     }
-  }, [clearVoiceTimers, handleVoiceTurn, stopVoiceSession]);
+  }, [abortActiveRecognitionInstance, stopVoiceSession]);
+
+  const startListeningCycle = useCallback(
+    (seedTranscript = '') => {
+      if (!voiceSessionRef.current) return;
+      clearVoiceTimers();
+      abortActiveRecognitionInstance();
+
+      const SpeechRecognition =
+        typeof window !== 'undefined'
+          ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+          : null;
+
+      if (!SpeechRecognition) {
+        setVoiceError(
+          "La reconnaissance vocale n'est pas prise en charge par ce navigateur. Utilisez Chrome ou Edge, ou passez en Mode texte."
+        );
+        stopVoiceSession(false);
+        return;
+      }
+
+      if (typeof window !== 'undefined' && typeof window.speechSynthesis !== 'undefined') {
+        try {
+          window.speechSynthesis.cancel();
+        } catch {
+          // Ignorer
+        }
+      }
+
+      if (turnControllerRef.current) {
+        turnControllerRef.current.abortWithoutSubmit();
+      }
+
+      const controller = new VoiceTurnController({
+        manualStopOnly: voiceTriggerModeRef.current === 'manual',
+        silenceTimeoutMs: DEFAULT_SILENCE_TIMEOUT_MS,
+        onTranscriptChange: (text) => {
+          if (voiceSessionRef.current) {
+            setLiveTranscript(text);
+          }
+        },
+        onSubmitTranscript: (fullTranscript) => {
+          abortActiveRecognitionInstance();
+          void handleVoiceTurn(fullTranscript);
+        },
+        onAutoRestartRequested: () => {
+          spawnRecognitionInstance();
+        },
+        onMaxDurationEmpty: () => {
+          stopVoiceSession(false);
+        },
+        onFatalError: (message, preserved) => {
+          setVoiceError(message);
+          if (preserved) {
+            setPreservedTranscript(preserved);
+            setLiveTranscript(preserved);
+            stopVoiceSession(true);
+          } else {
+            stopVoiceSession(false);
+          }
+        },
+      });
+
+      turnControllerRef.current = controller;
+      setPreservedTranscript('');
+      setVoicePhase('listening');
+      controller.startTurn(seedTranscript);
+      spawnRecognitionInstance();
+    },
+    [
+      abortActiveRecognitionInstance,
+      clearVoiceTimers,
+      handleVoiceTurn,
+      spawnRecognitionInstance,
+      stopVoiceSession,
+    ]
+  );
 
   useEffect(() => {
-    startListeningRef.current = startListeningCycle;
+    startListeningCycleRef.current = startListeningCycle;
   }, [startListeningCycle]);
 
+  const handleManualStopAndSend = useCallback(() => {
+    if (!voiceSessionRef.current) return;
+
+    // Éviter qu'un double-clic rapide n'annule une requête déjà soumise
+    if (isSubmittingTurnRef.current || turnControllerRef.current?.hasSubmitted()) {
+      return;
+    }
+
+    const controller = turnControllerRef.current;
+    if (controller && controller.isListeningActive()) {
+      abortActiveRecognitionInstance();
+      const didSubmit = controller.manualStop();
+      if (!didSubmit && !controller.hasSubmitted()) {
+        stopVoiceSession(false);
+      }
+      return;
+    }
+
+    stopVoiceSession(false);
+  }, [abortActiveRecognitionInstance, stopVoiceSession]);
+
+  const startNewVoiceSession = useCallback(
+    (seedTranscript = '') => {
+      setVoiceError(null);
+      setAttachmentError(null);
+      clearChatError();
+      if (!seedTranscript) {
+        setSpokenReply('');
+        setLiveTranscript('');
+        setPreservedTranscript('');
+      }
+
+      const SpeechRecognition =
+        typeof window !== 'undefined'
+          ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+          : null;
+
+      if (!SpeechRecognition) {
+        setVoiceError(
+          "La reconnaissance vocale n'est pas prise en charge par ce navigateur. Utilisez Chrome ou Edge, ou passez en Mode texte."
+        );
+        return;
+      }
+
+      voiceSessionRef.current = true;
+      if (!voiceConversationSessionIdRef.current) {
+        voiceConversationSessionIdRef.current = `jarvis-voice-${Date.now()}`;
+      }
+      setIsVoiceSessionActive(true);
+      startListeningCycle(seedTranscript);
+    },
+    [clearChatError, startListeningCycle]
+  );
+
+  const handleVoiceTriggerModeChange = (nextMode: VoiceTriggerMode) => {
+    if (nextMode === voiceTriggerMode) return;
+    setVoiceTriggerMode(nextMode);
+    voiceTriggerModeRef.current = nextMode;
+
+    // Si l'écoute est déjà active, basculer à chaud sans perdre les phrases déjà capturées
+    if (
+      voiceSessionRef.current &&
+      voicePhase === 'listening' &&
+      turnControllerRef.current &&
+      !turnControllerRef.current.hasSubmitted() &&
+      !isSubmittingTurnRef.current
+    ) {
+      const capturedSoFar = turnControllerRef.current.getFullTranscript();
+      startListeningCycle(capturedSoFar);
+    }
+  };
+
   const handleVoiceMicToggle = () => {
-    if (isVoiceSessionActive) {
-      stopVoiceSession();
+    if (voiceSessionRef.current) {
+      if (voicePhase === 'thinking' || isSubmittingTurnRef.current) {
+        return;
+      }
+      handleManualStopAndSend();
       return;
     }
 
+    if (!voiceConversationSessionIdRef.current) {
+      voiceConversationSessionIdRef.current = `jarvis-voice-${Date.now()}`;
+    }
+    startNewVoiceSession('');
+  };
+
+  const handleSendPreservedTranscript = () => {
+    const clean = preservedTranscript.trim();
+    if (!clean || isSubmittingTurnRef.current) return;
     setVoiceError(null);
-    setAttachmentError(null);
-    clearChatError();
-    setSpokenReply('');
-    setLiveTranscript('');
-
-    const SpeechRecognition =
-      typeof window !== 'undefined'
-        ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-        : null;
-
-    if (!SpeechRecognition) {
-      setVoiceError(
-        "La reconnaissance vocale n'est pas prise en charge par ce navigateur. Utilisez Chrome ou Edge, ou passez en Mode texte."
-      );
-      return;
-    }
-
     voiceSessionRef.current = true;
-    voiceConversationSessionIdRef.current = `jarvis-voice-${Date.now()}`;
+    if (!voiceConversationSessionIdRef.current) {
+      voiceConversationSessionIdRef.current = `jarvis-voice-${Date.now()}`;
+    }
     setIsVoiceSessionActive(true);
-    startListeningCycle();
+    void handleVoiceTurn(clean);
   };
 
   const switchToTextMode = () => {
     if (isVoiceSessionActive) {
-      stopVoiceSession();
+      stopVoiceSession(false);
     }
     setVoiceError(null);
     setActiveMode('text');
@@ -757,37 +917,75 @@ export const AssistantScreen: React.FC = () => {
            PAGE 1 : MODE VOCAL UNIQUEMENT (CONVERSATION VOCALE CONTINUE)
            ========================================================= */
         <div className="relative z-10 flex-1 w-full flex flex-col justify-between px-4 sm:px-8 pt-2 pb-24 md:pb-8 animate-in fade-in duration-200">
-          {/* Barre supérieure du Mode Vocal : bouton Arrêter (si actif) + bascule vers Mode Texte */}
-          <div className="w-full flex items-center justify-between gap-3">
-            <div className="text-xs font-semibold text-emerald-300/85 flex items-center gap-2">
-              {voicePhase === 'speaking' && <Volume2 className="w-4 h-4 text-[#00ff88]" />}
-              <span>
-                {isVoiceSessionActive ? 'Conversation vocale active' : 'Mode vocal JARVIS'}
-              </span>
-            </div>
+          {/* Barre supérieure du Mode Vocal : sélecteur Manuel / Auto (8s) + Quitter + bascule Mode Texte */}
+          <div className="w-full flex flex-col gap-2">
+            <div className="w-full flex items-center justify-between gap-2">
+              <div className="text-xs font-semibold text-emerald-300/85 flex items-center gap-2 min-w-0">
+                {voicePhase === 'speaking' && <Volume2 className="w-4 h-4 text-[#00ff88] shrink-0" />}
+                <span className="truncate">
+                  {isVoiceSessionActive
+                    ? voiceTriggerMode === 'auto'
+                      ? 'Conversation vocale · Auto (8s)'
+                      : 'Écoute vocale · Manuel'
+                    : 'Mode vocal Milan'}
+                </span>
+              </div>
 
-            <div className="flex items-center gap-2">
-              {isVoiceSessionActive && (
+              <div className="flex items-center gap-2 shrink-0">
+                {isVoiceSessionActive && (
+                  <button
+                    type="button"
+                    onClick={() => stopVoiceSession(false)}
+                    className="min-h-[44px] px-3.5 py-2 rounded-2xl bg-rose-500/20 border border-rose-400/60 hover:bg-rose-500/30 text-rose-200 hover:text-white transition-all flex items-center gap-1.5 text-xs font-bold cursor-pointer whitespace-nowrap shrink-0"
+                    aria-label="Quitter la conversation vocale"
+                  >
+                    <Square className="w-3.5 h-3.5 fill-current" />
+                    <span>Quitter</span>
+                  </button>
+                )}
+
                 <button
                   type="button"
-                  onClick={stopVoiceSession}
-                  className="min-h-[44px] px-3.5 py-2 rounded-2xl bg-rose-500/20 border border-rose-400/60 hover:bg-rose-500/30 text-rose-200 hover:text-white transition-all flex items-center gap-1.5 text-xs font-bold cursor-pointer whitespace-nowrap shrink-0"
-                  aria-label="Arrêter la conversation vocale"
+                  onClick={switchToTextMode}
+                  className="min-h-[44px] px-3.5 py-2 rounded-2xl bg-emerald-950/65 border border-[#00e676]/40 hover:border-[#00ff88] text-emerald-100 hover:text-white shadow-[0_0_18px_rgba(0,230,118,0.2)] transition-all flex items-center gap-2 text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
+                  aria-label="Passer au mode texte"
+                  title="Passer à la conversation écrite (Mode texte)"
                 >
-                  <Square className="w-3.5 h-3.5 fill-current" />
-                  <span>Arrêter</span>
+                  <MessageSquareText className="w-4 h-4 text-[#00e676]" />
+                  <span>Mode texte</span>
                 </button>
-              )}
+              </div>
+            </div>
 
+            {/* Sélecteur Mode Manuel (2e clic) / Mode Automatique (8 s de silence) */}
+            <div
+              role="group"
+              aria-label="Mode d'envoi vocal"
+              className="self-center inline-flex items-center p-1 rounded-2xl bg-emerald-950/75 border border-[#00e676]/30 shadow-[0_0_16px_rgba(0,230,118,0.12)]"
+            >
               <button
                 type="button"
-                onClick={switchToTextMode}
-                className="min-h-[44px] px-3.5 py-2 rounded-2xl bg-emerald-950/65 border border-[#00e676]/40 hover:border-[#00ff88] text-emerald-100 hover:text-white shadow-[0_0_18px_rgba(0,230,118,0.2)] transition-all flex items-center gap-2 text-xs font-semibold cursor-pointer whitespace-nowrap shrink-0"
-                aria-label="Passer au mode texte"
-                title="Passer à la conversation écrite (Mode texte)"
+                disabled={voicePhase === 'thinking' || voicePhase === 'speaking'}
+                onClick={() => handleVoiceTriggerModeChange('manual')}
+                className={`min-h-[36px] px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer disabled:opacity-50 ${
+                  voiceTriggerMode === 'manual'
+                    ? 'bg-gradient-to-r from-[#00e676] to-teal-400 text-slate-950 shadow-[0_0_12px_rgba(0,230,118,0.45)]'
+                    : 'text-emerald-200/80 hover:text-white'
+                }`}
               >
-                <MessageSquareText className="w-4 h-4 text-[#00e676]" />
-                <span>Mode texte</span>
+                Manuel (2e clic)
+              </button>
+              <button
+                type="button"
+                disabled={voicePhase === 'thinking' || voicePhase === 'speaking'}
+                onClick={() => handleVoiceTriggerModeChange('auto')}
+                className={`min-h-[36px] px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer disabled:opacity-50 ${
+                  voiceTriggerMode === 'auto'
+                    ? 'bg-gradient-to-r from-[#00e676] to-teal-400 text-slate-950 shadow-[0_0_12px_rgba(0,230,118,0.45)]'
+                    : 'text-emerald-200/80 hover:text-white'
+                }`}
+              >
+                Automatique (8 s)
               </button>
             </div>
           </div>
@@ -943,14 +1141,18 @@ export const AssistantScreen: React.FC = () => {
                 type="button"
                 onClick={handleVoiceMicToggle}
                 aria-label={
-                  isVoiceSessionActive
-                    ? 'Arrêter la conversation vocale'
-                    : 'Démarrer une conversation vocale avec JARVIS'
+                  voicePhase === 'listening'
+                    ? "Arrêter l'écoute et envoyer votre message"
+                    : isVoiceSessionActive
+                      ? 'Arrêter la conversation vocale'
+                      : "Démarrer l'écoute vocale avec JARVIS"
                 }
                 title={
-                  isVoiceSessionActive
-                    ? 'Arrêter la conversation vocale'
-                    : 'Parler à JARVIS (conversation vocale continue)'
+                  voicePhase === 'listening'
+                    ? 'Deuxième clic : arrêter et envoyer à JARVIS'
+                    : isVoiceSessionActive
+                      ? 'Arrêter'
+                      : "Premier clic : démarrer l'écoute vocale"
                 }
                 className={`w-16 h-16 sm:w-[72px] sm:h-[72px] rounded-full flex items-center justify-center border-2 transition-all cursor-pointer shrink-0 ${
                   isVoiceSessionActive
@@ -989,15 +1191,68 @@ export const AssistantScreen: React.FC = () => {
             <div className="text-center mt-4 sm:mt-5 space-y-2 px-2 max-w-md mx-auto">
               {!isVoiceSessionActive ? (
                 <>
-                  <h2 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight flex items-center justify-center gap-2">
-                    <span>Bonjour !</span>
-                    <span aria-hidden="true">👋</span>
-                  </h2>
-                  <p className="text-xs sm:text-sm text-emerald-100/90 leading-relaxed text-balance">
-                    Je suis <strong className="text-white font-bold">JARVIS</strong>, votre assistant intelligent.
-                    <br />
-                    Comment puis-je vous aider aujourd&apos;hui ?
-                  </p>
+                  {!spokenReply ? (
+                    <>
+                      <h2 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight flex items-center justify-center gap-2">
+                        <span>Bonjour !</span>
+                        <span aria-hidden="true">👋</span>
+                      </h2>
+                      <p className="text-xs sm:text-sm text-emerald-100/90 leading-relaxed text-balance">
+                        Je suis <strong className="text-white font-bold">JARVIS (Milan)</strong>, votre assistant intelligent.
+                        <br />
+                        {voiceTriggerMode === 'auto'
+                          ? "Appuyez sur le micro : j'attends 8 secondes de silence avant d'envoyer votre demande."
+                          : 'Appuyez une fois sur le micro pour parler, puis une deuxième fois pour envoyer.'}
+                      </p>
+                    </>
+                  ) : (
+                    <div className="space-y-2 text-left">
+                      {liveTranscript && (
+                        <p className="text-xs sm:text-sm text-white/95 bg-emerald-950/65 border border-emerald-500/30 rounded-2xl px-4 py-2.5 max-h-24 overflow-y-auto no-scrollbar">
+                          <span className="text-emerald-300/80 font-semibold">Vous : </span>
+                          {liveTranscript}
+                        </p>
+                      )}
+                      <p className="text-xs sm:text-sm text-emerald-100 bg-[#01291b]/80 border border-[#00e676]/35 rounded-2xl px-4 py-2.5 max-h-32 overflow-y-auto no-scrollbar">
+                        <span className="text-[#00ff88] font-semibold">JARVIS : </span>
+                        {spokenReply}
+                      </p>
+                    </div>
+                  )}
+                  {preservedTranscript && (
+                    <div className="mt-2 p-3 rounded-2xl bg-emerald-950/75 border border-[#00e676]/40 text-left space-y-2.5">
+                      <p className="text-xs text-white/95 leading-relaxed">
+                        <span className="text-[#00ff88] font-bold">Texte capturé conservé : </span>
+                        {preservedTranscript}
+                      </p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={handleSendPreservedTranscript}
+                          className="min-h-[40px] px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-[#00e676] to-teal-400 text-slate-950 font-bold text-xs cursor-pointer"
+                        >
+                          Envoyer ce message
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => startNewVoiceSession(preservedTranscript)}
+                          className="min-h-[40px] px-3.5 py-1.5 rounded-xl bg-emerald-900/70 border border-[#00e676]/45 text-emerald-100 font-semibold text-xs cursor-pointer"
+                        >
+                          Reprendre l&apos;écoute
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPreservedTranscript('');
+                            setLiveTranscript('');
+                          }}
+                          className="min-h-[40px] px-2.5 py-1.5 rounded-xl text-emerald-300/80 hover:text-white text-xs cursor-pointer"
+                        >
+                          Effacer
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </>
               ) : (
                 <>
@@ -1005,15 +1260,27 @@ export const AssistantScreen: React.FC = () => {
                     {getVoiceStatusLabel()}
                   </h2>
 
+                  {voicePhase === 'listening' && (
+                    <p className="text-[11px] text-emerald-200/80">
+                      {voiceTriggerMode === 'auto'
+                        ? liveTranscript
+                          ? "Envoi automatique après 8 s de silence, ou cliquez sur « Envoyer maintenant »."
+                          : "Mode auto actif : parlez naturellement, j'attends 8 s de silence à la fin de votre intervention."
+                        : liveTranscript
+                          ? "Appuyez sur le micro ou « Stop & envoyer » quand vous avez fini de parler."
+                          : "Mode manuel actif : parlez librement, même avec des pauses. Rien n'est envoyé avant votre second clic."}
+                    </p>
+                  )}
+
                   {liveTranscript && (
-                    <p className="text-xs sm:text-sm text-white/95 bg-emerald-950/65 border border-emerald-500/30 rounded-2xl px-4 py-2.5">
+                    <p className="text-xs sm:text-sm text-white/95 bg-emerald-950/65 border border-emerald-500/30 rounded-2xl px-4 py-2.5 max-h-32 overflow-y-auto no-scrollbar text-left">
                       <span className="text-emerald-300/80 font-semibold">Vous : </span>
                       {liveTranscript}
                     </p>
                   )}
 
                   {voicePhase === 'speaking' && spokenReply && (
-                    <p className="text-xs sm:text-sm text-emerald-100 bg-[#01291b]/80 border border-[#00e676]/35 rounded-2xl px-4 py-2.5 max-h-28 overflow-y-auto no-scrollbar">
+                    <p className="text-xs sm:text-sm text-emerald-100 bg-[#01291b]/80 border border-[#00e676]/35 rounded-2xl px-4 py-2.5 max-h-28 overflow-y-auto no-scrollbar text-left">
                       <span className="text-[#00ff88] font-semibold">JARVIS : </span>
                       {spokenReply}
                     </p>
@@ -1076,11 +1343,27 @@ export const AssistantScreen: React.FC = () => {
             <div className="w-full max-w-md mx-auto pt-2">
               <button
                 type="button"
-                onClick={stopVoiceSession}
-                className="w-full min-h-[52px] px-5 py-3 rounded-2xl bg-rose-500/20 border border-rose-400/60 hover:bg-rose-500/30 text-white font-bold text-sm shadow-[0_0_24px_rgba(244,63,94,0.28)] transition-all flex items-center justify-center gap-2 cursor-pointer"
+                onClick={handleManualStopAndSend}
+                className={`w-full min-h-[52px] px-5 py-3 rounded-2xl border font-bold text-sm transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                  voicePhase === 'listening' && liveTranscript.trim().length > 0
+                    ? 'bg-gradient-to-r from-[#00e676] to-teal-400 border-white text-slate-950 shadow-[0_0_24px_rgba(0,230,118,0.45)]'
+                    : 'bg-rose-500/20 border-rose-400/60 hover:bg-rose-500/30 text-white shadow-[0_0_24px_rgba(244,63,94,0.28)]'
+                }`}
               >
-                <Square className="w-4 h-4 fill-current text-rose-300" />
-                <span>Arrêter la conversation vocale</span>
+                <Square
+                  className={`w-4 h-4 fill-current ${
+                    voicePhase === 'listening' && liveTranscript.trim().length > 0
+                      ? 'text-slate-950'
+                      : 'text-rose-300'
+                  }`}
+                />
+                <span>
+                  {voicePhase === 'listening' && liveTranscript.trim().length > 0
+                    ? voiceTriggerMode === 'auto'
+                      ? 'Envoyer maintenant'
+                      : 'Stop & envoyer le message'
+                    : 'Arrêter la conversation vocale'}
+                </span>
               </button>
             </div>
           ) : (
