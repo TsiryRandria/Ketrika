@@ -8,7 +8,9 @@ import {
   FinanceSettings,
   NotificationItem, 
   UserProfile, 
-  ChatMessage 
+  ChatMessage,
+  JarvisConversation,
+  JarvisConversationMode
 } from '../types';
 import { 
   initialProjects, 
@@ -472,6 +474,19 @@ class SQLiteService {
           savingsGoalCurrent REAL,
           savingsGoalTarget REAL
         );
+
+        CREATE TABLE IF NOT EXISTS jarvis_conversations (
+          id TEXT PRIMARY KEY,
+          mode TEXT NOT NULL,
+          title TEXT NOT NULL,
+          preview TEXT,
+          createdAt TEXT,
+          updatedAt TEXT,
+          dateLabel TEXT,
+          timeLabel TEXT,
+          messages_json TEXT,
+          sort_order INTEGER
+        );
       `);
 
       const taskCols = this.getTableColumns(targetDb, 'tasks');
@@ -503,6 +518,7 @@ class SQLiteService {
         { name: 'transactions', ascending: false },
         { name: 'notifications', ascending: false },
         { name: 'chat_messages', ascending: true },
+        { name: 'jarvis_conversations', ascending: false },
       ];
 
       for (const tbl of sortableTables) {
@@ -514,8 +530,10 @@ class SQLiteService {
         targetDb.run(`CREATE INDEX IF NOT EXISTS idx_${tbl.name}_sort_order ON ${tbl.name}(sort_order)`);
       }
 
+      targetDb.run("CREATE INDEX IF NOT EXISTS idx_jarvis_conversations_mode_sort ON jarvis_conversations(mode, sort_order DESC)");
+
       targetDb.run(
-        "INSERT OR REPLACE INTO meta_info (key, value) VALUES ('schema_version', '3')"
+        "INSERT OR REPLACE INTO meta_info (key, value) VALUES ('schema_version', '4')"
       );
     });
   }
@@ -649,9 +667,26 @@ class SQLiteService {
       }
       this.saveFinanceSettingsSync(financeToSave);
 
+      // 10. JARVIS Conversations (Voice & Text)
+      if (!forceInitialDefaults) {
+        try {
+          const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_jarvis_conversations`);
+          if (saved) {
+            const parsed: JarvisConversation[] = JSON.parse(saved);
+            if (Array.isArray(parsed)) {
+              for (const conv of parsed) {
+                this.saveJarvisConversationSync(conv);
+              }
+            }
+          }
+        } catch {
+          // Ignore malformed localStorage cache
+        }
+      }
+
       // Mark migration done
       this.db!.run(
-        "INSERT OR REPLACE INTO meta_info (key, value) VALUES ('migration_status', 'completed_securely'), ('engine', 'sqlite-3.x-wasm'), ('schema_version', '2'), ('migrated_at', ?)",
+        "INSERT OR REPLACE INTO meta_info (key, value) VALUES ('migration_status', 'completed_securely'), ('engine', 'sqlite-3.x-wasm'), ('schema_version', '4'), ('migrated_at', ?)",
         [new Date().toISOString()]
       );
     });
@@ -1031,6 +1066,32 @@ class SQLiteService {
     );
   }
 
+  private saveJarvisConversationSync(c: JarvisConversation) {
+    if (!this.db) return;
+    const parsedTs = Date.parse(c.updatedAt || c.createdAt || '');
+    const sortOrder = Number.isFinite(parsedTs)
+      ? parsedTs
+      : this.computeSortOrder(c.id, false, undefined, true);
+    const normalizedMode: JarvisConversationMode = c.mode === 'voice' ? 'voice' : 'text';
+    this.db.run(
+      `INSERT OR REPLACE INTO jarvis_conversations
+       (id, mode, title, preview, createdAt, updatedAt, dateLabel, timeLabel, messages_json, sort_order)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        c.id,
+        normalizedMode,
+        c.title || (normalizedMode === 'voice' ? 'Session vocale' : 'Conversation écrite'),
+        c.preview || '',
+        c.createdAt || '',
+        c.updatedAt || '',
+        c.dateLabel || '',
+        c.timeLabel || '',
+        JSON.stringify(Array.isArray(c.messages) ? c.messages : []),
+        sortOrder,
+      ]
+    );
+  }
+
   private sanitizeLegacyUrl(url?: string): string | undefined {
     if (!url) return undefined;
     if (url.includes('photo-1534528741775')) return '/assets/images/avatar_user.jpg';
@@ -1329,6 +1390,39 @@ class SQLiteService {
     }
   }
 
+  getJarvisConversations(): JarvisConversation[] {
+    if (!this.db || !this.isInitialized) return [];
+    try {
+      const res = this.db.exec("SELECT * FROM jarvis_conversations ORDER BY sort_order DESC, rowid DESC");
+      if (res.length === 0 || !res[0].values) return [];
+      const cols = res[0].columns;
+      return res[0].values.map(row => {
+        const obj: any = {};
+        cols.forEach((col, idx) => { obj[col] = row[idx]; });
+        let messages: ChatMessage[] = [];
+        try {
+          messages = obj.messages_json ? JSON.parse(obj.messages_json) : [];
+        } catch { messages = []; }
+
+        const mode: JarvisConversationMode = obj.mode === 'voice' ? 'voice' : 'text';
+        return {
+          id: String(obj.id),
+          mode,
+          title: String(obj.title || (mode === 'voice' ? 'Conversation vocale' : 'Conversation écrite')),
+          preview: String(obj.preview || ''),
+          createdAt: String(obj.createdAt || ''),
+          updatedAt: String(obj.updatedAt || ''),
+          dateLabel: String(obj.dateLabel || ''),
+          timeLabel: String(obj.timeLabel || ''),
+          messages: Array.isArray(messages) ? messages : [],
+        };
+      });
+    } catch (e) {
+      console.error('[Ketrika SQLite] Error reading jarvis_conversations:', e);
+      return [];
+    }
+  }
+
   // Safe async readers that await initialization & all pending write operations
   async readWhenReady<T>(reader: () => T): Promise<T> {
     await this.waitForPendingOperations();
@@ -1347,6 +1441,7 @@ class SQLiteService {
       notifications: this.getNotifications(),
       profile: this.getProfile(),
       chatMessages: this.getChatMessages(),
+      jarvisConversations: this.getJarvisConversations(),
     };
   }
 
@@ -1508,6 +1603,39 @@ class SQLiteService {
     });
   }
 
+  async saveJarvisConversation(c: JarvisConversation): Promise<void> {
+    return this.enqueueOperation(async () => {
+      this.runInTransaction(() => {
+        this.saveJarvisConversationSync(c);
+      });
+      await this.persist();
+    });
+  }
+
+  async deleteJarvisConversation(id: string): Promise<void> {
+    return this.enqueueOperation(async () => {
+      if (!this.db) return;
+      this.runInTransaction(() => {
+        this.db!.run("DELETE FROM jarvis_conversations WHERE id = ?", [id]);
+      });
+      await this.persist();
+    });
+  }
+
+  async clearJarvisConversations(mode?: JarvisConversationMode): Promise<void> {
+    return this.enqueueOperation(async () => {
+      if (!this.db) return;
+      this.runInTransaction(() => {
+        if (mode) {
+          this.db!.run("DELETE FROM jarvis_conversations WHERE mode = ?", [mode]);
+        } else {
+          this.db!.run("DELETE FROM jarvis_conversations;");
+        }
+      });
+      await this.persist();
+    });
+  }
+
   async resetDatabase(): Promise<void> {
     return this.enqueueOperation(async () => {
       if (!this.db) return;
@@ -1522,6 +1650,7 @@ class SQLiteService {
           DELETE FROM notifications;
           DELETE FROM user_profile;
           DELETE FROM chat_messages;
+          DELETE FROM jarvis_conversations;
           DELETE FROM meta_info;
         `);
         this.runSafeMigrationSync(true);
@@ -1592,6 +1721,7 @@ class SQLiteService {
         jobsCount: 0,
         notificationsCount: 0,
         chatMessagesCount: 0,
+        jarvisConversationsCount: 0,
         sizeInKb: 0,
         engine: 'SQLite 3.x (Chargement...)',
         storage: 'IndexedDB Dual-Snapshot',
@@ -1631,6 +1761,7 @@ class SQLiteService {
       jobsCount: count('jobs'),
       notificationsCount: count('notifications'),
       chatMessagesCount: count('chat_messages'),
+      jarvisConversationsCount: count('jarvis_conversations'),
       sizeInKb,
       engine: 'SQLite 3.x (Atomic Savepoints)',
       storage: 'IndexedDB Dual-Snapshot + Checksums',

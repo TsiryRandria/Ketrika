@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { ProfileInfoPage } from './ProfileInfoPage';
+import { JarvisHistoryPage } from './JarvisHistoryPage';
 import { 
   Settings, 
   Crown, 
@@ -27,7 +28,8 @@ import {
   Smartphone,
   HardDrive,
   Layers,
-  Table
+  Table,
+  History
 } from 'lucide-react';
 import { KetrikaLogo } from '../common/KetrikaLogo';
 
@@ -43,17 +45,19 @@ export const SettingsScreen: React.FC = () => {
     exportSqliteDb,
     importSqliteDb,
     getDbStats,
+    jarvisConversations,
     setIsEditingProfileInfo
   } = useApp();
 
   const [showInfoPage, setShowInfoPage] = useState(false);
+  const [showJarvisHistory, setShowJarvisHistory] = useState(false);
 
   useEffect(() => {
-    setIsEditingProfileInfo(showInfoPage);
+    setIsEditingProfileInfo(showInfoPage || showJarvisHistory);
     return () => {
       setIsEditingProfileInfo(false);
     };
-  }, [showInfoPage, setIsEditingProfileInfo]);
+  }, [showInfoPage, showJarvisHistory, setIsEditingProfileInfo]);
 
   const [showEditProfileModal, setShowEditProfileModal] = useState(false);
   const [showAddDocModal, setShowAddDocModal] = useState(false);
@@ -93,6 +97,13 @@ export const SettingsScreen: React.FC = () => {
   if (showInfoPage) {
     return <ProfileInfoPage onBack={() => setShowInfoPage(false)} />;
   }
+
+  if (showJarvisHistory) {
+    return <JarvisHistoryPage onBack={() => setShowJarvisHistory(false)} />;
+  }
+
+  const voiceHistoryCount = jarvisConversations.filter((c) => c.mode === 'voice').length;
+  const textHistoryCount = jarvisConversations.filter((c) => c.mode === 'text').length;
 
   return (
     <div className="space-y-4 sm:space-y-6 pb-28 md:pb-8 animate-in fade-in duration-200 max-w-4xl mx-auto">
@@ -167,6 +178,30 @@ export const SettingsScreen: React.FC = () => {
           }`} />
         </button>
       </div>
+
+      {/* Bouton : Historique des conversations JARVIS */}
+      <button
+        type="button"
+        onClick={() => setShowJarvisHistory(true)}
+        className="w-full glass-panel rounded-3xl p-5 border border-[#00e676]/40 hover:border-[#00ff88] shadow-[0_0_22px_rgba(0,230,118,0.16)] flex items-center justify-between gap-3 text-left group transition-all cursor-pointer"
+      >
+        <div className="flex items-center gap-3.5 min-w-0">
+          <div className="w-11 h-11 rounded-2xl bg-emerald-500/20 border border-[#00e676]/45 text-[#00ff88] flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+            <History className="w-5 h-5" />
+          </div>
+          <div className="min-w-0">
+            <h3 className="font-bold text-white text-sm sm:text-base truncate">
+              Historique des conversations JARVIS
+            </h3>
+            <p className="text-xs text-emerald-200/75 mt-0.5 tabular-nums truncate">
+              {voiceHistoryCount} vocal{voiceHistoryCount > 1 ? 'es' : 'e'} · {textHistoryCount} écrite
+              {textHistoryCount > 1 ? 's' : ''} · Vocal &amp; écrit séparés
+            </p>
+          </div>
+        </div>
+
+        <ChevronRight className="w-5 h-5 text-[#00e676] shrink-0 group-hover:translate-x-1 transition-transform" />
+      </button>
 
       {/* 6. Base de données SQLite & Stockage Hors Connexion (Android & Web) */}
       <div className="glass-panel rounded-3xl p-5 sm:p-6 border border-emerald-500/30 space-y-4">
@@ -560,7 +595,8 @@ export const SettingsScreen: React.FC = () => {
                   { name: 'jobs', desc: 'Offres d’emploi, candidatures & statuts', count: stats.jobsCount },
                   { name: 'notifications', desc: 'Alertes locales, rappels & bilans', count: stats.notificationsCount },
                   { name: 'user_profile', desc: 'Profil utilisateur, adresse & pièces jointes', count: 1 },
-                  { name: 'chat_messages', desc: 'Historique des échanges avec l’IA Ketrika', count: stats.chatMessagesCount },
+                  { name: 'chat_messages', desc: 'Fil actif des échanges écrits avec JARVIS', count: stats.chatMessagesCount },
+                  { name: 'jarvis_conversations', desc: 'Historique centralisé JARVIS (vocal & écrit séparés)', count: stats.jarvisConversationsCount },
                   { name: 'meta_info', desc: 'Métadonnées de version & migration', count: 3 }
                 ];
 

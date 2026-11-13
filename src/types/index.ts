@@ -220,4 +220,19 @@ export interface ChatMessage {
   timestamp: string;
   attachment?: string;
   attachmentsMeta?: AttachmentMeta[];
+  audioDataUrl?: string;
+}
+
+export type JarvisConversationMode = 'voice' | 'text';
+
+export interface JarvisConversation {
+  id: string;
+  mode: JarvisConversationMode;
+  title: string;
+  preview: string;
+  createdAt: string;
+  updatedAt: string;
+  dateLabel: string;
+  timeLabel: string;
+  messages: ChatMessage[];
 }

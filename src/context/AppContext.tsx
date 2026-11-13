@@ -10,7 +10,9 @@ import {
   FinanceSettings,
   NotificationItem, 
   UserProfile, 
-  ChatMessage 
+  ChatMessage,
+  JarvisConversation,
+  JarvisConversationMode
 } from '../types';
 import { 
   initialProjects, 
@@ -75,6 +77,7 @@ interface AppContextType {
     jobsCount: number;
     notificationsCount: number;
     chatMessagesCount: number;
+    jarvisConversationsCount: number;
     sizeInKb: number;
     engine: string;
     storage: string;
@@ -142,11 +145,28 @@ interface AppContextType {
   
   // Assistant IA
   chatMessages: ChatMessage[];
+  jarvisConversations: JarvisConversation[];
+  activeTextConversationId: string | null;
+  requestedAssistantMode: 'voice' | 'text' | null;
+  clearRequestedAssistantMode: () => void;
   isGeneratingAI: boolean;
   chatError: string | null;
   clearChatError: () => void;
-  sendChatMessage: (text: string, attachment?: string | PendingAssistantAttachment[]) => Promise<boolean>;
+  sendChatMessage: (
+    text: string,
+    attachment?: string | PendingAssistantAttachment[],
+    options?: {
+      onReply?: (replyText: string) => void;
+      voiceMode?: boolean;
+      voiceSessionId?: string;
+    }
+  ) => Promise<boolean>;
   clearChat: () => void;
+  startNewTextConversation: () => void;
+  deleteActiveTextConversation: () => void;
+  resumeTextConversation: (conversationId: string) => void;
+  deleteJarvisConversation: (conversationId: string) => void;
+  clearJarvisHistory: (mode?: JarvisConversationMode | 'all') => void;
   
   // Backup / Reset
   exportData: () => void;
@@ -194,7 +214,29 @@ type DataSlice =
   | 'financeSettings'
   | 'notifications'
   | 'profile'
-  | 'chat';
+  | 'chat'
+  | 'jarvisHistory';
+
+const formatConversationTitle = (
+  text: string,
+  mode: JarvisConversationMode,
+  attachmentCount = 0
+): string => {
+  const cleaned = text.replace(/\s+/g, ' ').trim();
+  if (cleaned) {
+    return cleaned.length > 56 ? `${cleaned.slice(0, 56).trim()}…` : cleaned;
+  }
+  if (attachmentCount > 0) {
+    return `Analyse de ${attachmentCount} fichier${attachmentCount > 1 ? 's' : ''}`;
+  }
+  return mode === 'voice' ? 'Session vocale JARVIS' : 'Conversation écrite JARVIS';
+};
+
+const formatConversationPreview = (text: string): string => {
+  const cleaned = text.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/\s+/g, ' ').trim();
+  if (!cleaned) return '';
+  return cleaned.length > 130 ? `${cleaned.slice(0, 130).trim()}…` : cleaned;
+};
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [currentTab, setCurrentTab] = useState<NavigationTab>('bienvenue');
@@ -213,6 +255,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     notifications: 0,
     profile: 0,
     chat: 0,
+    jarvisHistory: 0,
   });
 
   const markSliceMutated = (slice: DataSlice) => {
@@ -319,6 +362,42 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   });
 
+  const [jarvisConversations, setJarvisConversations] = useState<JarvisConversation[]>(() => {
+    try {
+      const saved = localStorage.getItem(`${LOCAL_STORAGE_KEY}_jarvis_conversations`);
+      if (!saved) return [];
+      const parsed = JSON.parse(saved);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [activeTextConversationId, setActiveTextConversationId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(`${LOCAL_STORAGE_KEY}_active_text_conv_id`) || null;
+    } catch {
+      return null;
+    }
+  });
+  const activeTextConvIdRef = useRef<string | null>(activeTextConversationId);
+
+  useEffect(() => {
+    activeTextConvIdRef.current = activeTextConversationId;
+    try {
+      if (activeTextConversationId) {
+        localStorage.setItem(`${LOCAL_STORAGE_KEY}_active_text_conv_id`, activeTextConversationId);
+      } else {
+        localStorage.removeItem(`${LOCAL_STORAGE_KEY}_active_text_conv_id`);
+      }
+    } catch {
+      // Ignore storage write error
+    }
+  }, [activeTextConversationId]);
+
+  const [requestedAssistantMode, setRequestedAssistantMode] = useState<'voice' | 'text' | null>(null);
+  const clearRequestedAssistantMode = () => setRequestedAssistantMode(null);
+
   const [isGeneratingAI, setIsGeneratingAI] = useState<boolean>(false);
   const [chatError, setChatError] = useState<string | null>(null);
   const clearChatError = () => setChatError(null);
@@ -373,6 +452,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             if (sliceVersionsRef.current.chat === 0 && loaded.chatMessages.length > 0) {
               setChatMessages(loaded.chatMessages);
             }
+            if (sliceVersionsRef.current.jarvisHistory === 0) {
+              setJarvisConversations(loaded.jarvisConversations);
+              if (
+                activeTextConvIdRef.current &&
+                !loaded.jarvisConversations.some(
+                  (c) => c.id === activeTextConvIdRef.current && c.mode === 'text'
+                )
+              ) {
+                activeTextConvIdRef.current = null;
+                setActiveTextConversationId(null);
+              }
+            }
           }
 
           setIsDbReady(sqliteService.isDatabaseReady());
@@ -414,6 +505,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       ...m,
       attachment: stripHeavyDataUri(m.attachment),
     }));
+    const sanitizedJarvisConversations = jarvisConversations.map((conv) => ({
+      ...conv,
+      messages: conv.messages.map((m) => ({
+        ...m,
+        attachment: stripHeavyDataUri(m.attachment),
+        audioDataUrl: stripHeavyDataUri(m.audioDataUrl),
+        attachmentsMeta: m.attachmentsMeta?.map((meta) => ({
+          ...meta,
+          previewUrl: stripHeavyDataUri(meta.previewUrl),
+        })),
+      })),
+    }));
 
     safeWriteLocalStorageSlice(`${LOCAL_STORAGE_KEY}_projects`, sanitizedProjects);
     safeWriteLocalStorageSlice(`${LOCAL_STORAGE_KEY}_tasks`, tasks);
@@ -424,7 +527,22 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     safeWriteLocalStorageSlice(`${LOCAL_STORAGE_KEY}_notifications`, notifications);
     safeWriteLocalStorageSlice(`${LOCAL_STORAGE_KEY}_profile`, sanitizedProfile);
     safeWriteLocalStorageSlice(`${LOCAL_STORAGE_KEY}_chat`, sanitizedChat);
-  }, [projects, tasks, notes, jobs, transactions, financeSettings, notifications, profile, chatMessages]);
+    safeWriteLocalStorageSlice(
+      `${LOCAL_STORAGE_KEY}_jarvis_conversations`,
+      sanitizedJarvisConversations
+    );
+  }, [
+    projects,
+    tasks,
+    notes,
+    jobs,
+    transactions,
+    financeSettings,
+    notifications,
+    profile,
+    chatMessages,
+    jarvisConversations,
+  ]);
 
   // Project handlers with strict frontend/backend-aligned date validation
   const addProject = (proj: Omit<Project, 'id'>): ProjectMutationResult => {
@@ -830,11 +948,78 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     });
   };
 
-  // Assistant Chat handler with smart contextual answering, attachment size alignment & SQLite logs
+  const appendMessageToJarvisHistory = (
+    conversationId: string,
+    mode: JarvisConversationMode,
+    message: ChatMessage,
+    attachmentCountForTitle = 0
+  ) => {
+    const now = new Date();
+    const isoNow = now.toISOString();
+    const dateLabel = now.toLocaleDateString('fr-FR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    });
+    const timeLabel = now.toLocaleTimeString('fr-FR', {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+
+    markSliceMutated('jarvisHistory');
+    setJarvisConversations((prev) => {
+      const existingIndex = prev.findIndex((c) => c.id === conversationId);
+      let updatedConv: JarvisConversation;
+      let nextList: JarvisConversation[];
+
+      if (existingIndex >= 0) {
+        const existing = prev[existingIndex];
+        const nextMessages = [...existing.messages, message];
+        updatedConv = {
+          ...existing,
+          mode,
+          updatedAt: isoNow,
+          dateLabel,
+          timeLabel,
+          preview: formatConversationPreview(message.text) || existing.preview,
+          messages: nextMessages,
+        };
+        nextList = [
+          updatedConv,
+          ...prev.slice(0, existingIndex),
+          ...prev.slice(existingIndex + 1),
+        ];
+      } else {
+        updatedConv = {
+          id: conversationId,
+          mode,
+          title: formatConversationTitle(message.text, mode, attachmentCountForTitle),
+          preview: formatConversationPreview(message.text),
+          createdAt: isoNow,
+          updatedAt: isoNow,
+          dateLabel,
+          timeLabel,
+          messages: [message],
+        };
+        nextList = [updatedConv, ...prev];
+      }
+
+      persistAsync(sqliteService.saveJarvisConversation(updatedConv), 'saveJarvisConversation');
+      return nextList;
+    });
+  };
+
+  // Assistant Chat handler with strict voice/text history separation, attachment size alignment & SQLite persistence
   const sendChatMessage = async (
     text: string,
-    attachment?: string | PendingAssistantAttachment[]
+    attachment?: string | PendingAssistantAttachment[],
+    options?: {
+      onReply?: (replyText: string) => void;
+      voiceMode?: boolean;
+      voiceSessionId?: string;
+    }
   ): Promise<boolean> => {
+    const isVoiceMode = Boolean(options?.voiceMode);
     setChatError(null);
     const pendingAttachments: PendingAssistantAttachment[] = Array.isArray(attachment)
       ? attachment
@@ -894,6 +1079,7 @@ Il a ${tasks.length} tâches dont ${tasks.filter(t => !t.completed).length} en a
 Son solde financier actuel est de ${currentBalance.toLocaleString('fr-FR')} Ar.
 Date du jour : ${new Date().toISOString().split('T')[0]}.
 Pour créer ou modifier un projet via les fonctions IA, utilise toujours le format AAAA-MM-JJ (ou JJ/MM/AAAA) et assure-toi que la date de fin est postérieure ou égale à la date de début.
+${options?.voiceMode ? "L'utilisateur converse actuellement à la voix : réponds de façon naturelle, orale, fluide et concise (2 à 4 phrases maximum, sans Markdown ni puces)." : ''}
 Réponds toujours en français, de façon élégante, concise, proactive, bienveillante et orientée productivité.
     `;
 
@@ -954,9 +1140,34 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
       attachmentsMeta: attachmentsMeta.length > 0 ? attachmentsMeta : undefined,
     };
 
-    markSliceMutated('chat');
-    setChatMessages(prev => [...prev, userMsg]);
-    persistAsync(sqliteService.saveChatMessage(userMsg), 'saveChatMessage');
+    let targetConversationId: string;
+    if (isVoiceMode) {
+      targetConversationId = options?.voiceSessionId || `jarvis-voice-${Date.now()}`;
+      appendMessageToJarvisHistory(
+        targetConversationId,
+        'voice',
+        userMsg,
+        pendingAttachments.length
+      );
+    } else {
+      if (!activeTextConvIdRef.current) {
+        const newTextId = `jarvis-text-${Date.now()}`;
+        activeTextConvIdRef.current = newTextId;
+        setActiveTextConversationId(newTextId);
+      }
+      targetConversationId = activeTextConvIdRef.current;
+
+      markSliceMutated('chat');
+      setChatMessages(prev => [...prev, userMsg]);
+      persistAsync(sqliteService.saveChatMessage(userMsg), 'saveChatMessage');
+      appendMessageToJarvisHistory(
+        targetConversationId,
+        'text',
+        userMsg,
+        pendingAttachments.length
+      );
+    }
+
     setIsGeneratingAI(true);
 
     try {
@@ -1112,29 +1323,121 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
         timestamp: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
       };
 
-      setChatMessages(prev => [...prev, assistantMsg]);
-      persistAsync(sqliteService.saveChatMessage(assistantMsg), 'saveChatMessage');
+      if (isVoiceMode) {
+        appendMessageToJarvisHistory(targetConversationId, 'voice', assistantMsg);
+      } else {
+        setChatMessages(prev => [...prev, assistantMsg]);
+        persistAsync(sqliteService.saveChatMessage(assistantMsg), 'saveChatMessage');
+        appendMessageToJarvisHistory(targetConversationId, 'text', assistantMsg);
+      }
+
+      options?.onReply?.(replyText);
       return true;
     } catch {
+      const errorText =
+        'Ketrika est 100% opérationnel en mode local hors connexion avec la base SQLite. Vos données sont persistées.';
       const errorMsg: ChatMessage = {
         id: `msg-${Date.now() + 1}`,
         role: 'assistant',
-        text: "Ketrika est 100% opérationnel en mode local hors connexion avec la base SQLite. Vos données sont persistées.",
+        text: errorText,
         timestamp: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
       };
-      setChatMessages(prev => [...prev, errorMsg]);
-      persistAsync(sqliteService.saveChatMessage(errorMsg), 'saveChatMessage');
+
+      if (isVoiceMode) {
+        appendMessageToJarvisHistory(targetConversationId, 'voice', errorMsg);
+      } else {
+        setChatMessages(prev => [...prev, errorMsg]);
+        persistAsync(sqliteService.saveChatMessage(errorMsg), 'saveChatMessage');
+        appendMessageToJarvisHistory(targetConversationId, 'text', errorMsg);
+      }
+
+      options?.onReply?.(errorText);
       return false;
     } finally {
       setIsGeneratingAI(false);
     }
   };
 
+  const replaceActiveChatThreadInSqlite = (messages: ChatMessage[]) => {
+    persistAsync(
+      (async () => {
+        await sqliteService.clearChatMessages();
+        const customMessages = messages.filter((m) => m.id !== initialChatMessages[0]?.id);
+        for (const msg of customMessages) {
+          await sqliteService.saveChatMessage(msg);
+        }
+      })(),
+      'replaceActiveChatThreadInSqlite'
+    );
+  };
+
   const clearChat = () => {
     markSliceMutated('chat');
     setChatError(null);
+    activeTextConvIdRef.current = null;
+    setActiveTextConversationId(null);
     setChatMessages([initialChatMessages[0]]);
     persistAsync(sqliteService.clearChatMessages(), 'clearChatMessages');
+  };
+
+  const startNewTextConversation = () => {
+    clearChat();
+  };
+
+  const deleteActiveTextConversation = () => {
+    const activeId = activeTextConvIdRef.current;
+    if (activeId) {
+      markSliceMutated('jarvisHistory');
+      setJarvisConversations((prev) => prev.filter((c) => c.id !== activeId));
+      persistAsync(sqliteService.deleteJarvisConversation(activeId), 'deleteJarvisConversation');
+    }
+    clearChat();
+  };
+
+  const resumeTextConversation = (conversationId: string) => {
+    const target = jarvisConversations.find(
+      (c) => c.id === conversationId && c.mode === 'text'
+    );
+    if (!target) return;
+
+    const loadedMessages =
+      target.messages.length > 0 ? target.messages : [initialChatMessages[0]];
+
+    markSliceMutated('chat');
+    setChatError(null);
+    activeTextConvIdRef.current = target.id;
+    setActiveTextConversationId(target.id);
+    setChatMessages(loadedMessages);
+    replaceActiveChatThreadInSqlite(loadedMessages);
+    setRequestedAssistantMode('text');
+    setCurrentTab('assistant');
+  };
+
+  const deleteJarvisConversation = (conversationId: string) => {
+    markSliceMutated('jarvisHistory');
+    setJarvisConversations((prev) => prev.filter((c) => c.id !== conversationId));
+    persistAsync(sqliteService.deleteJarvisConversation(conversationId), 'deleteJarvisConversation');
+
+    if (activeTextConvIdRef.current === conversationId) {
+      clearChat();
+    }
+  };
+
+  const clearJarvisHistory = (mode: JarvisConversationMode | 'all' = 'all') => {
+    markSliceMutated('jarvisHistory');
+    if (mode === 'all') {
+      setJarvisConversations([]);
+      persistAsync(sqliteService.clearJarvisConversations(), 'clearJarvisConversations');
+      if (activeTextConvIdRef.current) {
+        clearChat();
+      }
+    } else {
+      setJarvisConversations((prev) => prev.filter((c) => c.mode !== mode));
+      persistAsync(sqliteService.clearJarvisConversations(mode), 'clearJarvisConversations');
+      if (mode === 'text' && activeTextConvIdRef.current) {
+        clearChat();
+      }
+    }
   };
 
   // SQLite Binary Export (.db file for Android / backups)
@@ -1176,6 +1479,9 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
         setNotifications(all.notifications);
         setProfile(all.profile);
         setChatMessages(all.chatMessages);
+        setJarvisConversations(all.jarvisConversations);
+        activeTextConvIdRef.current = null;
+        setActiveTextConversationId(null);
         setIsDbReady(sqliteService.isDatabaseReady());
         return true;
       }
@@ -1200,6 +1506,7 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
       notifications,
       profile,
       chatMessages,
+      jarvisConversations,
       dbStats: sqliteService.getDatabaseStats(),
       exportedAt: new Date().toISOString(),
       app: 'Ketrika v1.2.0 (SQLite Offline)'
@@ -1228,6 +1535,9 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
     setNotifications(initialNotifications);
     setProfile(initialProfile);
     setChatMessages(initialChatMessages);
+    setJarvisConversations([]);
+    activeTextConvIdRef.current = null;
+    setActiveTextConversationId(null);
   };
 
   return (
@@ -1291,11 +1601,20 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
       updateProfile,
       addDocument,
       chatMessages,
+      jarvisConversations,
+      activeTextConversationId,
+      requestedAssistantMode,
+      clearRequestedAssistantMode,
       isGeneratingAI,
       chatError,
       clearChatError,
       sendChatMessage,
       clearChat,
+      startNewTextConversation,
+      deleteActiveTextConversation,
+      resumeTextConversation,
+      deleteJarvisConversation,
+      clearJarvisHistory,
       exportData,
       resetAllData,
     }}>

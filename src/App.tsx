@@ -87,7 +87,7 @@ const MainLayout: React.FC = () => {
             {/* Inner Phone Screen with exact forest green background from page_2 */}
             <div className="flex-1 w-full bg-gradient-to-b from-[#015437] via-[#01412b] to-[#012d1e] rounded-[34px] overflow-y-auto no-scrollbar relative flex flex-col border border-emerald-500/30">
               <TopBar onOpenQuickCreate={() => setShowQuickCreate(true)} />
-              <main className="flex-1 p-4">
+              <main className={`flex-1 flex flex-col min-h-0 ${currentTab === 'assistant' ? 'p-0' : 'p-4'}`}>
                 {renderCurrentScreen()}
               </main>
               <BottomNav />
@@ -118,7 +118,7 @@ const MainLayout: React.FC = () => {
               <TopBar onOpenQuickCreate={() => setShowQuickCreate(true)} />
               <div className="flex-1 flex overflow-hidden">
                 <DesktopSidebar />
-                <main className="flex-1 p-6 overflow-y-auto no-scrollbar">
+                <main className={`flex-1 flex flex-col min-h-0 overflow-y-auto no-scrollbar ${currentTab === 'assistant' ? 'p-0' : 'p-6'}`}>
                   {renderCurrentScreen()}
                 </main>
               </div>
@@ -137,10 +137,16 @@ const MainLayout: React.FC = () => {
           </div>
 
           {/* Main Application Column */}
-          <div className="flex-1 flex flex-col min-w-0">
+          <div className="flex-1 flex flex-col min-w-0 min-h-screen">
             <TopBar onOpenQuickCreate={() => setShowQuickCreate(true)} />
 
-            <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8">
+            <main
+              className={
+                currentTab === 'assistant'
+                  ? 'flex-1 w-full flex flex-col min-h-0'
+                  : 'flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8'
+              }
+            >
               {renderCurrentScreen()}
             </main>
 

@@ -131,3 +131,74 @@
 .animate-dot-pulse {
   animation: pulseGlow 1.4s ease-in-out infinite;
 }
+
+@keyframes hudSpinClockwise {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes hudSpinCounterClockwise {
+  from {
+    transform: rotate(360deg);
+  }
+  to {
+    transform: rotate(0deg);
+  }
+}
+
+.animate-hud-slow {
+  animation: hudSpinClockwise 36s linear infinite;
+}
+
+.animate-hud-reverse {
+  animation: hudSpinCounterClockwise 24s linear infinite;
+}
+
+.animate-hud-fast {
+  animation: hudSpinClockwise 4.5s linear infinite;
+}
+
+@keyframes voiceWaveScale {
+  0%, 100% {
+    transform: scaleY(0.55);
+    opacity: 0.7;
+  }
+  50% {
+    transform: scaleY(1.45);
+    opacity: 1;
+  }
+}
+
+.animate-voice-wave {
+  animation: voiceWaveScale 0.75s ease-in-out infinite;
+}
+
+@keyframes corePulseRing {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.85;
+  }
+  50% {
+    transform: scale(1.06);
+    opacity: 1;
+  }
+}
+
+.animate-core-pulse {
+  animation: corePulseRing 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-hud-slow,
+  .animate-hud-reverse,
+  .animate-hud-fast,
+  .animate-voice-wave,
+  .animate-core-pulse,
+  .animate-dot-pulse {
+    animation: none;
+  }
+}
