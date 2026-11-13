@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useApp, PendingAssistantAttachment } from '../../context/AppContext';
 import { 
   Bot, 
   Sparkles, 
@@ -15,11 +15,69 @@ import {
   Folder, 
   ListOrdered, 
   BarChart3, 
-  Smile, 
   ChevronRight,
   Loader2,
-  StopCircle
+  X,
+  FileText,
+  Image as ImageIcon,
+  AlertCircle
 } from 'lucide-react';
+import {
+  AttachmentMeta,
+  MAX_ATTACHMENT_COUNT,
+  MAX_FILE_BASE64_BYTES,
+  MAX_FILE_BYTES,
+  MAX_TOTAL_ENCODED_BYTES,
+  MAX_TOTAL_RAW_BYTES,
+  detectAttachmentKind,
+  estimateBase64Bytes,
+  formatBytesFr,
+} from '../../shared/attachmentLimits';
+
+const ACCEPTED_FILE_TYPES =
+  'image/png,image/jpeg,image/webp,image/gif,.txt,.md,.markdown,.csv,.json,.log,.xml,.yaml,.yml,.html,.htm,.css,.js,.jsx,.ts,.tsx,.py,.sql,text/*';
+
+const readFileAsDataUrl = (file: File): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result);
+      } else {
+        reject(new Error('Lecture impossible'));
+      }
+    };
+    reader.onerror = () => reject(new Error('Erreur de lecture du fichier'));
+    reader.readAsDataURL(file);
+  });
+
+const parseMessageAttachments = (
+  attachmentsMeta?: AttachmentMeta[],
+  rawAttachment?: string
+): AttachmentMeta[] => {
+  if (attachmentsMeta && attachmentsMeta.length > 0) {
+    return attachmentsMeta;
+  }
+  if (!rawAttachment) return [];
+  try {
+    const parsed = JSON.parse(rawAttachment);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((item) => item && typeof item.name === 'string');
+    }
+  } catch {
+    return [
+      {
+        id: 'legacy-att',
+        name: rawAttachment,
+        mimeType: 'application/octet-stream',
+        kind: 'text',
+        rawSize: 0,
+        encodedSize: 0,
+      },
+    ];
+  }
+  return [];
+};
 
 export const AssistantScreen: React.FC = () => {
   const { 
@@ -27,14 +85,16 @@ export const AssistantScreen: React.FC = () => {
     sendChatMessage, 
     clearChat, 
     isGeneratingAI,
-    projects,
-    tasks,
-    currentBalance 
+    chatError,
+    clearChatError,
   } = useApp();
 
   const [inputText, setInputText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
+  const [pendingAttachments, setPendingAttachments] = useState<PendingAssistantAttachment[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -45,10 +105,170 @@ export const AssistantScreen: React.FC = () => {
   }, [chatMessages, isGeneratingAI]);
 
   const handleSend = async (textToSend?: string) => {
-    const text = textToSend || inputText;
-    if (!text.trim() || isGeneratingAI) return;
-    setInputText('');
-    await sendChatMessage(text);
+    const text = textToSend !== undefined ? textToSend : inputText;
+    const attachmentsToSend = textToSend !== undefined ? [] : pendingAttachments;
+    if ((!text.trim() && attachmentsToSend.length === 0) || isGeneratingAI) return;
+
+    setAttachmentError(null);
+    clearChatError();
+
+    const sent = await sendChatMessage(
+      text,
+      attachmentsToSend.length > 0 ? attachmentsToSend : undefined
+    );
+    if (sent && textToSend === undefined) {
+      setInputText('');
+      setPendingAttachments([]);
+    }
+  };
+
+  const handleOpenFilePicker = () => {
+    if (isGeneratingAI) return;
+    fileInputRef.current?.click();
+  };
+
+  const handleFilesSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = '';
+    if (files.length === 0) return;
+
+    setAttachmentError(null);
+    clearChatError();
+
+    let currentCount = pendingAttachments.length;
+    let currentRawTotal = pendingAttachments.reduce((acc, item) => acc + item.rawSize, 0);
+    let currentEncodedTotal = pendingAttachments.reduce((acc, item) => acc + item.encodedSize, 0);
+
+    const added: PendingAssistantAttachment[] = [];
+    const errors: string[] = [];
+
+    for (const file of files) {
+      if (currentCount >= MAX_ATTACHMENT_COUNT) {
+        errors.push(
+          `Limite atteinte (${MAX_ATTACHMENT_COUNT} fichiers max par message) : "${file.name}" n'a pas été ajouté.`
+        );
+        continue;
+      }
+
+      const detected = detectAttachmentKind(file.name, file.type);
+      if (!detected) {
+        errors.push(
+          `Format non pris en charge pour "${file.name}". Utilisez une image (PNG, JPG, WEBP, GIF) ou un fichier texte.`
+        );
+        continue;
+      }
+
+      const estimatedEncoded =
+        detected.kind === 'image' ? estimateBase64Bytes(file.size) : file.size;
+
+      if (file.size > MAX_FILE_BYTES || estimatedEncoded > MAX_FILE_BASE64_BYTES) {
+        errors.push(
+          `"${file.name}" (${formatBytesFr(file.size)} brut, ~${formatBytesFr(estimatedEncoded)} en Base64) dépasse la limite de ${formatBytesFr(MAX_FILE_BYTES)} par fichier (~${formatBytesFr(MAX_FILE_BASE64_BYTES)} en Base64).`
+        );
+        continue;
+      }
+
+      if (
+        currentRawTotal + file.size > MAX_TOTAL_RAW_BYTES ||
+        currentEncodedTotal + estimatedEncoded > MAX_TOTAL_ENCODED_BYTES
+      ) {
+        errors.push(
+          `Impossible d'ajouter "${file.name}" : la taille totale dépasserait la limite du serveur (${formatBytesFr(MAX_TOTAL_RAW_BYTES)} brut / ~${formatBytesFr(MAX_TOTAL_ENCODED_BYTES)} encodé en Base64).`
+        );
+        continue;
+      }
+
+      try {
+        if (detected.kind === 'image') {
+          const dataUrl = await readFileAsDataUrl(file);
+          const commaIndex = dataUrl.indexOf(',');
+          const base64Data = commaIndex >= 0 ? dataUrl.slice(commaIndex + 1) : dataUrl;
+          const actualEncodedBytes = new TextEncoder().encode(base64Data).length;
+
+          if (actualEncodedBytes > MAX_FILE_BASE64_BYTES) {
+            errors.push(
+              `"${file.name}" (${formatBytesFr(actualEncodedBytes)} en Base64) dépasse la limite par fichier.`
+            );
+            continue;
+          }
+
+          if (
+            currentRawTotal + file.size > MAX_TOTAL_RAW_BYTES ||
+            currentEncodedTotal + actualEncodedBytes > MAX_TOTAL_ENCODED_BYTES
+          ) {
+            errors.push(
+              `Impossible d'ajouter "${file.name}" : le total Base64 dépasserait ${formatBytesFr(MAX_TOTAL_ENCODED_BYTES)}.`
+            );
+            continue;
+          }
+
+          currentCount += 1;
+          currentRawTotal += file.size;
+          currentEncodedTotal += actualEncodedBytes;
+
+          added.push({
+            id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            name: file.name,
+            mimeType: detected.normalizedMime,
+            kind: 'image',
+            rawSize: file.size,
+            encodedSize: actualEncodedBytes,
+            base64Data,
+            previewUrl: dataUrl,
+          });
+        } else {
+          const textContent = await file.text();
+          const rawTextBytes = new TextEncoder().encode(textContent).length;
+          const encodedTextBytes = new TextEncoder().encode(JSON.stringify(textContent)).length;
+
+          if (rawTextBytes > MAX_FILE_BYTES || encodedTextBytes > MAX_FILE_BASE64_BYTES) {
+            errors.push(
+              `"${file.name}" (${formatBytesFr(rawTextBytes)}) dépasse la limite par fichier de ${formatBytesFr(MAX_FILE_BYTES)}.`
+            );
+            continue;
+          }
+
+          if (
+            currentRawTotal + rawTextBytes > MAX_TOTAL_RAW_BYTES ||
+            currentEncodedTotal + encodedTextBytes > MAX_TOTAL_ENCODED_BYTES
+          ) {
+            errors.push(
+              `Impossible d'ajouter "${file.name}" : le total dépasserait la limite de ${formatBytesFr(MAX_TOTAL_RAW_BYTES)} brut / ~${formatBytesFr(MAX_TOTAL_ENCODED_BYTES)} encodé.`
+            );
+            continue;
+          }
+
+          currentCount += 1;
+          currentRawTotal += rawTextBytes;
+          currentEncodedTotal += encodedTextBytes;
+
+          added.push({
+            id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            name: file.name,
+            mimeType: detected.normalizedMime,
+            kind: 'text',
+            rawSize: rawTextBytes,
+            encodedSize: encodedTextBytes,
+            textContent,
+          });
+        }
+      } catch {
+        errors.push(`Impossible de lire le fichier "${file.name}".`);
+      }
+    }
+
+    if (added.length > 0) {
+      setPendingAttachments((prev) => [...prev, ...added]);
+    }
+    if (errors.length > 0) {
+      setAttachmentError(errors[0]);
+    }
+  };
+
+  const removePendingAttachment = (id: string) => {
+    setPendingAttachments((prev) => prev.filter((item) => item.id !== id));
+    setAttachmentError(null);
+    clearChatError();
   };
 
   const handleSuggestionClick = (promptText: string) => {
@@ -235,6 +455,7 @@ export const AssistantScreen: React.FC = () => {
             <div className="flex-1 overflow-y-auto no-scrollbar space-y-4 pr-1 mb-4">
               {chatMessages.map((msg) => {
                 const isAssistant = msg.role === 'assistant';
+                const msgAttachments = parseMessageAttachments(msg.attachmentsMeta, msg.attachment);
                 return (
                   <div
                     key={msg.id}
@@ -259,6 +480,36 @@ export const AssistantScreen: React.FC = () => {
                           : 'bg-emerald-500 text-slate-950 font-medium rounded-tr-sm shadow-[0_0_15px_rgba(0,230,118,0.3)]'
                       }`}
                     >
+                      {msgAttachments.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 mb-2">
+                          {msgAttachments.map((att, idx) => (
+                            <div
+                              key={att.id || idx}
+                              className={`flex items-center gap-1.5 px-2 py-1 rounded-xl text-[11px] font-semibold ${
+                                isAssistant
+                                  ? 'bg-emerald-900/60 text-emerald-200 border border-emerald-500/30'
+                                  : 'bg-slate-950/15 text-slate-950 border border-slate-950/20'
+                              }`}
+                            >
+                              {att.previewUrl ? (
+                                <img
+                                  src={att.previewUrl}
+                                  alt={att.name}
+                                  className="w-5 h-5 rounded object-cover"
+                                />
+                              ) : att.kind === 'image' ? (
+                                <ImageIcon className="w-3.5 h-3.5 shrink-0" />
+                              ) : (
+                                <FileText className="w-3.5 h-3.5 shrink-0" />
+                              )}
+                              <span className="truncate max-w-[140px]">{att.name}</span>
+                              {att.rawSize > 0 && (
+                                <span className="opacity-75">({formatBytesFr(att.rawSize)})</span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       <div className="whitespace-pre-wrap">{msg.text}</div>
                       <span className={`block text-[10px] mt-1.5 ${isAssistant ? 'text-emerald-400/60' : 'text-slate-800/70'} text-right`}>
                         {msg.timestamp}
@@ -285,7 +536,89 @@ export const AssistantScreen: React.FC = () => {
 
             {/* Bottom Input Area & Controls (Matching page 6 bottom) */}
             <div className="space-y-3 pt-3 border-t border-emerald-500/20">
-              
+
+              {/* Hidden multi-file input (images + fichiers texte) */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept={ACCEPTED_FILE_TYPES}
+                onChange={handleFilesSelected}
+                className="hidden"
+              />
+
+              {/* Clear Error Banner when attachment or server limit is exceeded */}
+              {(attachmentError || chatError) && (
+                <div
+                  role="alert"
+                  className="flex items-start justify-between gap-2 px-3 py-2.5 rounded-2xl bg-rose-500/15 border border-rose-400/50 text-rose-200 text-xs"
+                >
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                    <span>{attachmentError || chatError}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAttachmentError(null);
+                      clearChatError();
+                    }}
+                    className="text-rose-300 hover:text-white shrink-0"
+                    aria-label="Fermer l'erreur"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+
+              {/* Pending Attachments Preview & Cumulative Size Indicator */}
+              {pendingAttachments.length > 0 && (
+                <div className="p-2.5 rounded-2xl bg-emerald-950/70 border border-emerald-500/30 space-y-2">
+                  <div className="flex items-center justify-between text-[11px] text-emerald-300/80 px-1">
+                    <span>
+                      {pendingAttachments.length}/{MAX_ATTACHMENT_COUNT} pièce(s) jointe(s)
+                    </span>
+                    <span>
+                      {formatBytesFr(pendingAttachments.reduce((s, a) => s + a.rawSize, 0))} / {formatBytesFr(MAX_TOTAL_RAW_BYTES)} brut
+                      {' · '}
+                      {formatBytesFr(pendingAttachments.reduce((s, a) => s + a.encodedSize, 0))} / {formatBytesFr(MAX_TOTAL_ENCODED_BYTES)} encodé
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {pendingAttachments.map((att) => (
+                      <div
+                        key={att.id}
+                        className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-emerald-900/50 border border-emerald-500/30 text-xs text-emerald-100"
+                      >
+                        {att.previewUrl ? (
+                          <img
+                            src={att.previewUrl}
+                            alt={att.name}
+                            className="w-6 h-6 rounded object-cover shrink-0"
+                          />
+                        ) : (
+                          <FileText className="w-4 h-4 text-emerald-400 shrink-0" />
+                        )}
+                        <div className="min-w-0">
+                          <p className="font-semibold truncate max-w-[140px]">{att.name}</p>
+                          <p className="text-[10px] text-emerald-300/70">
+                            {formatBytesFr(att.rawSize)} ({formatBytesFr(att.encodedSize)} encodé)
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => removePendingAttachment(att.id)}
+                          className="text-emerald-300/70 hover:text-rose-300 p-0.5"
+                          title="Retirer cette pièce jointe"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Main Input Row */}
               <div className="relative flex items-center gap-2">
                 <input
@@ -301,9 +634,10 @@ export const AssistantScreen: React.FC = () => {
                 {/* Attachment icon */}
                 <button
                   type="button"
-                  onClick={() => alert('Sélection de fichier : Vous pouvez joindre des documents, images ou rapports.')}
-                  className="p-2.5 rounded-2xl glass-panel-subtle text-emerald-300 hover:text-white transition-colors shrink-0"
-                  title="Joindre un fichier"
+                  onClick={handleOpenFilePicker}
+                  disabled={isGeneratingAI}
+                  className="p-2.5 rounded-2xl glass-panel-subtle text-emerald-300 hover:text-white transition-colors shrink-0 disabled:opacity-50"
+                  title={`Joindre des images ou fichiers texte (max ${formatBytesFr(MAX_FILE_BYTES)}/fichier, ${formatBytesFr(MAX_TOTAL_RAW_BYTES)} total)`}
                 >
                   <Paperclip className="w-4 h-4" />
                 </button>
@@ -312,7 +646,7 @@ export const AssistantScreen: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => handleSend()}
-                  disabled={isGeneratingAI || !inputText.trim()}
+                  disabled={isGeneratingAI || (!inputText.trim() && pendingAttachments.length === 0)}
                   className="p-3 rounded-2xl bg-gradient-to-tr from-emerald-500 to-teal-400 text-slate-950 font-bold shadow-[0_0_15px_rgba(0,230,118,0.5)] hover:shadow-[0_0_25px_rgba(0,230,118,0.8)] transition-all shrink-0 disabled:opacity-50"
                   title="Envoyer"
                 >
@@ -337,8 +671,9 @@ export const AssistantScreen: React.FC = () => {
 
                 <button
                   type="button"
-                  onClick={() => alert('Gestionnaire de fichiers Ketrika connecté.')}
-                  className="py-2 px-3 rounded-xl glass-panel-subtle border border-emerald-500/25 text-emerald-200 hover:text-white hover:bg-emerald-900/40 text-xs font-semibold flex items-center justify-center gap-2 transition-all"
+                  onClick={handleOpenFilePicker}
+                  disabled={isGeneratingAI}
+                  className="py-2 px-3 rounded-xl glass-panel-subtle border border-emerald-500/25 text-emerald-200 hover:text-white hover:bg-emerald-900/40 text-xs font-semibold flex items-center justify-center gap-2 transition-all disabled:opacity-50"
                 >
                   <Briefcase className="w-3.5 h-3.5 text-emerald-400" />
                   <span>Joindre un fichier</span>
@@ -352,6 +687,8 @@ export const AssistantScreen: React.FC = () => {
                   onClick={() => {
                     clearChat();
                     setInputText('');
+                    setPendingAttachments([]);
+                    setAttachmentError(null);
                   }}
                   className="w-full py-2.5 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-400 text-slate-950 font-bold text-xs shadow-[0_0_18px_rgba(0,230,118,0.4)] hover:shadow-[0_0_25px_rgba(0,230,118,0.7)] transition-all flex items-center justify-center gap-2"
                 >
@@ -361,7 +698,11 @@ export const AssistantScreen: React.FC = () => {
 
                 <button
                   type="button"
-                  onClick={clearChat}
+                  onClick={() => {
+                    clearChat();
+                    setPendingAttachments([]);
+                    setAttachmentError(null);
+                  }}
                   className="w-full py-2.5 rounded-2xl glass-panel-subtle border border-emerald-500/25 hover:border-rose-500/40 hover:bg-rose-500/10 text-emerald-300/80 hover:text-rose-300 font-semibold text-xs transition-all flex items-center justify-center gap-2"
                 >
                   <Trash2 className="w-3.5 h-3.5" />

@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
 import { Project } from '../../types';
+import {
+  parseStrictProjectDate,
+  validateProjectDates,
+} from '../../shared/projectDateValidation';
 import { 
   Folder, 
   Plus, 
@@ -65,33 +69,24 @@ export const ProjectsScreen: React.FC = () => {
 
   const toInputDate = (dateStr?: string): string => {
     if (!dateStr) return '';
-    if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return dateStr;
-    const frMatch = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(dateStr.trim());
-    if (frMatch) return `${frMatch[3]}-${frMatch[2]}-${frMatch[1]}`;
+    const parsed = parseStrictProjectDate(dateStr);
+    if (parsed.ok) return parsed.iso;
     return dateStr;
   };
 
   const formatDateDisplay = (dateStr?: string): string => {
     if (!dateStr) return 'Non définie';
-    const isoMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr.trim());
-    if (isoMatch) return `${isoMatch[3]}/${isoMatch[2]}/${isoMatch[1]}`;
+    const parsed = parseStrictProjectDate(dateStr);
+    if (parsed.ok) {
+      const [y, m, d] = parsed.iso.split('-');
+      return `${d}/${m}/${y}`;
+    }
     return dateStr;
   };
 
-  const parseDateTimestamp = (dateStr?: string): number | null => {
-    if (!dateStr) return null;
-    const normalized = toInputDate(dateStr.trim());
-    const isoMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(normalized);
-    if (!isoMatch) return null;
-    const ts = new Date(Number(isoMatch[1]), Number(isoMatch[2]) - 1, Number(isoMatch[3])).getTime();
-    return Number.isNaN(ts) ? null : ts;
-  };
-
-  const isEndDateBeforeStartDate = (start?: string, end?: string): boolean => {
-    const startTs = parseDateTimestamp(start);
-    const endTs = parseDateTimestamp(end);
-    if (startTs === null || endTs === null) return false;
-    return endTs < startTs;
+  const getProjectDateValidationError = (start?: string, end?: string): string => {
+    const result = validateProjectDates(start, end);
+    return result.valid ? '' : result.error;
   };
 
   // New Project Form state
@@ -179,14 +174,15 @@ export const ProjectsScreen: React.FC = () => {
     e.preventDefault();
     if (!newTitle.trim()) return;
 
-    if (isEndDateBeforeStartDate(newStartDate, newEndDate)) {
-      setNewDateError("La date d'échéance ne peut pas être antérieure à la date de début.");
+    const dateError = getProjectDateValidationError(newStartDate, newEndDate);
+    if (dateError) {
+      setNewDateError(dateError);
       return;
     }
 
     setNewDateError('');
 
-    addProject({
+    const result = addProject({
       title: newTitle.trim(),
       description: newDesc.trim() || 'Projet stratégique géré sur Ketrika.',
       startDate: newStartDate,
@@ -203,6 +199,11 @@ export const ProjectsScreen: React.FC = () => {
         { id: `sub-${Date.now()}-4`, text: 'Livraison client et bilan', completed: false },
       ]
     });
+
+    if (!result.ok) {
+      setNewDateError(result.error || 'Dates de projet invalides.');
+      return;
+    }
 
     setNewTitle('');
     setNewDesc('');
@@ -242,14 +243,15 @@ export const ProjectsScreen: React.FC = () => {
     e.preventDefault();
     if (!activeProject || !editTitle.trim()) return;
 
-    if (isEndDateBeforeStartDate(editStartDate, editEndDate)) {
-      setEditDateError("La date d'échéance ne peut pas être antérieure à la date de début.");
+    const dateError = getProjectDateValidationError(editStartDate, editEndDate);
+    if (dateError) {
+      setEditDateError(dateError);
       return;
     }
 
     setEditDateError('');
 
-    updateProject(activeProject.id, {
+    const result = updateProject(activeProject.id, {
       title: editTitle.trim(),
       description: editDesc.trim(),
       category: editCategory.trim() || 'Général',
@@ -258,6 +260,12 @@ export const ProjectsScreen: React.FC = () => {
       endDate: editEndDate,
       image: editImage || '/assets/images/project_code.jpg',
     });
+
+    if (!result.ok) {
+      setEditDateError(result.error || 'Dates de projet invalides.');
+      return;
+    }
+
     setShowEditModal(false);
   };
 
@@ -473,11 +481,7 @@ export const ProjectsScreen: React.FC = () => {
                     onChange={(e) => {
                       const nextStart = e.target.value;
                       setEditStartDate(nextStart);
-                      if (isEndDateBeforeStartDate(nextStart, editEndDate)) {
-                        setEditDateError("La date d'échéance ne peut pas être antérieure à la date de début.");
-                      } else {
-                        setEditDateError('');
-                      }
+                      setEditDateError(getProjectDateValidationError(nextStart, editEndDate));
                     }}
                     className="w-full px-4 py-3 rounded-2xl bg-emerald-950/40 border border-emerald-500/25 text-white text-sm focus:border-emerald-400 focus:outline-none transition-colors [color-scheme:dark]"
                   />
@@ -495,14 +499,10 @@ export const ProjectsScreen: React.FC = () => {
                     onChange={(e) => {
                       const nextEnd = e.target.value;
                       setEditEndDate(nextEnd);
-                      if (isEndDateBeforeStartDate(editStartDate, nextEnd)) {
-                        setEditDateError("La date d'échéance ne peut pas être antérieure à la date de début.");
-                      } else {
-                        setEditDateError('');
-                      }
+                      setEditDateError(getProjectDateValidationError(editStartDate, nextEnd));
                     }}
                     className={`w-full px-4 py-3 rounded-2xl bg-emerald-950/40 border text-white text-sm focus:outline-none transition-colors [color-scheme:dark] ${
-                      editDateError || isEndDateBeforeStartDate(editStartDate, editEndDate)
+                      editDateError || Boolean(getProjectDateValidationError(editStartDate, editEndDate))
                         ? 'border-rose-500/70 focus:border-rose-400'
                         : 'border-emerald-500/25 focus:border-emerald-400'
                     }`}
@@ -510,9 +510,9 @@ export const ProjectsScreen: React.FC = () => {
                 </div>
               </div>
 
-              {(editDateError || isEndDateBeforeStartDate(editStartDate, editEndDate)) && (
-                <p className="text-xs font-semibold text-rose-400 pt-1">
-                  {editDateError || "La date d'échéance ne peut pas être antérieure à la date de début."}
+              {(editDateError || getProjectDateValidationError(editStartDate, editEndDate)) && (
+                <p role="alert" className="text-xs font-semibold text-rose-400 pt-1">
+                  {editDateError || getProjectDateValidationError(editStartDate, editEndDate)}
                 </p>
               )}
             </div>
@@ -532,7 +532,7 @@ export const ProjectsScreen: React.FC = () => {
               </div>
               <button
                 type="submit"
-                disabled={!editTitle.trim() || isEndDateBeforeStartDate(editStartDate, editEndDate)}
+                disabled={!editTitle.trim() || Boolean(getProjectDateValidationError(editStartDate, editEndDate))}
                 className="w-full sm:w-auto px-8 py-3.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 text-slate-950 font-extrabold text-sm shadow-[0_0_25px_rgba(0,230,118,0.5)] hover:shadow-[0_0_35px_rgba(0,230,118,0.7)] hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-40 disabled:hover:scale-100 flex items-center justify-center cursor-pointer shrink-0"
               >
                 <span>Enregistrer les modifications</span>
@@ -1015,11 +1015,7 @@ export const ProjectsScreen: React.FC = () => {
                     onChange={(e) => {
                       const nextStart = e.target.value;
                       setNewStartDate(nextStart);
-                      if (isEndDateBeforeStartDate(nextStart, newEndDate)) {
-                        setNewDateError("La date d'échéance ne peut pas être antérieure à la date de début.");
-                      } else {
-                        setNewDateError('');
-                      }
+                      setNewDateError(getProjectDateValidationError(nextStart, newEndDate));
                     }}
                     className="w-full px-4 py-3 rounded-2xl bg-emerald-950/40 border border-emerald-500/25 text-white text-sm focus:border-emerald-400 focus:outline-none transition-colors [color-scheme:dark]"
                   />
@@ -1037,14 +1033,10 @@ export const ProjectsScreen: React.FC = () => {
                     onChange={(e) => {
                       const nextEnd = e.target.value;
                       setNewEndDate(nextEnd);
-                      if (isEndDateBeforeStartDate(newStartDate, nextEnd)) {
-                        setNewDateError("La date d'échéance ne peut pas être antérieure à la date de début.");
-                      } else {
-                        setNewDateError('');
-                      }
+                      setNewDateError(getProjectDateValidationError(newStartDate, nextEnd));
                     }}
                     className={`w-full px-4 py-3 rounded-2xl bg-emerald-950/40 border text-white text-sm focus:outline-none transition-colors [color-scheme:dark] ${
-                      newDateError || isEndDateBeforeStartDate(newStartDate, newEndDate)
+                      newDateError || Boolean(getProjectDateValidationError(newStartDate, newEndDate))
                         ? 'border-rose-500/70 focus:border-rose-400'
                         : 'border-emerald-500/25 focus:border-emerald-400'
                     }`}
@@ -1052,9 +1044,9 @@ export const ProjectsScreen: React.FC = () => {
                 </div>
               </div>
 
-              {(newDateError || isEndDateBeforeStartDate(newStartDate, newEndDate)) && (
-                <p className="text-xs font-semibold text-rose-400 pt-1">
-                  {newDateError || "La date d'échéance ne peut pas être antérieure à la date de début."}
+              {(newDateError || getProjectDateValidationError(newStartDate, newEndDate)) && (
+                <p role="alert" className="text-xs font-semibold text-rose-400 pt-1">
+                  {newDateError || getProjectDateValidationError(newStartDate, newEndDate)}
                 </p>
               )}
             </div>
@@ -1074,7 +1066,7 @@ export const ProjectsScreen: React.FC = () => {
               </div>
               <button
                 type="submit"
-                disabled={!newTitle.trim() || isEndDateBeforeStartDate(newStartDate, newEndDate)}
+                disabled={!newTitle.trim() || Boolean(getProjectDateValidationError(newStartDate, newEndDate))}
                 className="w-full sm:w-auto px-8 py-3.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 text-slate-950 font-extrabold text-sm shadow-[0_0_25px_rgba(0,230,118,0.5)] hover:shadow-[0_0_35px_rgba(0,230,118,0.7)] hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-40 disabled:hover:scale-100 flex items-center justify-center cursor-pointer shrink-0"
               >
                 <span>Enregistrer le projet</span>

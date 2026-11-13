@@ -1,3 +1,5 @@
+import type { AttachmentMeta } from '../shared/attachmentLimits';
+
 export type NavigationTab = 
   | 'bienvenue'
   | 'accueil' 
@@ -217,4 +219,5 @@ export interface ChatMessage {
   text: string;
   timestamp: string;
   attachment?: string;
+  attachmentsMeta?: AttachmentMeta[];
 }

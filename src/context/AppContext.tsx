@@ -25,6 +25,31 @@ import {
 } from '../data/initialData';
 import confetti from 'canvas-confetti';
 import { sqliteService } from '../services/sqliteService';
+import {
+  AssistantAttachmentPayload,
+  AttachmentMeta,
+  MAX_ATTACHMENT_COUNT,
+  MAX_FILE_BASE64_BYTES,
+  MAX_FILE_BYTES,
+  MAX_JSON_PAYLOAD_BYTES,
+  MAX_TOTAL_ENCODED_BYTES,
+  MAX_TOTAL_RAW_BYTES,
+  formatBytesFr,
+} from '../shared/attachmentLimits';
+import {
+  validateProjectAiFunctionCall,
+  validateProjectDates,
+} from '../shared/projectDateValidation';
+
+export interface ProjectMutationResult {
+  ok: boolean;
+  error?: string;
+}
+
+export interface PendingAssistantAttachment extends AssistantAttachmentPayload {
+  encodedSize: number;
+  previewUrl?: string;
+}
 
 interface AppContextType {
   currentTab: NavigationTab;
@@ -59,8 +84,8 @@ interface AppContextType {
   projects: Project[];
   isProjectDetailOpen: boolean;
   setIsProjectDetailOpen: (val: boolean) => void;
-  addProject: (proj: Omit<Project, 'id'>) => void;
-  updateProject: (id: string, updates: Partial<Project>) => void;
+  addProject: (proj: Omit<Project, 'id'>) => ProjectMutationResult;
+  updateProject: (id: string, updates: Partial<Project>) => ProjectMutationResult;
   deleteProject: (id: string) => void;
   toggleSubTask: (projectId: string, subTaskId: string) => void;
   
@@ -118,7 +143,9 @@ interface AppContextType {
   // Assistant IA
   chatMessages: ChatMessage[];
   isGeneratingAI: boolean;
-  sendChatMessage: (text: string, attachment?: string) => Promise<void>;
+  chatError: string | null;
+  clearChatError: () => void;
+  sendChatMessage: (text: string, attachment?: string | PendingAssistantAttachment[]) => Promise<boolean>;
   clearChat: () => void;
   
   // Backup / Reset
@@ -293,6 +320,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   });
 
   const [isGeneratingAI, setIsGeneratingAI] = useState<boolean>(false);
+  const [chatError, setChatError] = useState<string | null>(null);
+  const clearChatError = () => setChatError(null);
 
   // Initialize SQLite database, safely migrate localStorage and populate live state
   useEffect(() => {
@@ -397,11 +426,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     safeWriteLocalStorageSlice(`${LOCAL_STORAGE_KEY}_chat`, sanitizedChat);
   }, [projects, tasks, notes, jobs, transactions, financeSettings, notifications, profile, chatMessages]);
 
-  // Project handlers
-  const addProject = (proj: Omit<Project, 'id'>) => {
+  // Project handlers with strict frontend/backend-aligned date validation
+  const addProject = (proj: Omit<Project, 'id'>): ProjectMutationResult => {
+    const dateValidation = validateProjectDates(proj.startDate, proj.endDate);
+    if (!dateValidation.valid) {
+      return { ok: false, error: dateValidation.error };
+    }
+
     const newProj: Project = {
       ...proj,
       id: `proj-${Date.now()}`,
+      startDate: dateValidation.startDateIso,
+      endDate: dateValidation.endDateIso,
     };
     markSliceMutated('projects');
     setProjects(prev => [newProj, ...prev]);
@@ -413,16 +449,43 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       category: 'project',
       time: "À l'instant",
     });
+    return { ok: true };
   };
 
-  const updateProject = (id: string, updates: Partial<Project>) => {
+  const updateProject = (id: string, updates: Partial<Project>): ProjectMutationResult => {
+    const existing = projects.find(p => p.id === id);
+    if (!existing) {
+      return { ok: false, error: 'Projet introuvable.' };
+    }
+
+    let normalizedUpdates = { ...updates };
+    if (updates.startDate !== undefined || updates.endDate !== undefined) {
+      const candidateStart =
+        updates.startDate !== undefined ? updates.startDate : existing.startDate;
+      const candidateEnd =
+        updates.endDate !== undefined ? updates.endDate : existing.endDate;
+
+      const dateValidation = validateProjectDates(candidateStart, candidateEnd);
+      if (!dateValidation.valid) {
+        return { ok: false, error: dateValidation.error };
+      }
+
+      if (updates.startDate !== undefined) {
+        normalizedUpdates.startDate = dateValidation.startDateIso;
+      }
+      if (updates.endDate !== undefined) {
+        normalizedUpdates.endDate = dateValidation.endDateIso;
+      }
+    }
+
     markSliceMutated('projects');
     setProjects(prev => {
-      const updated = prev.map(p => p.id === id ? { ...p, ...updates } : p);
+      const updated = prev.map(p => p.id === id ? { ...p, ...normalizedUpdates } : p);
       const target = updated.find(p => p.id === id);
       if (target) persistAsync(sqliteService.saveProject(target), 'saveProject');
       return updated;
     });
+    return { ok: true };
   };
 
   const deleteProject = (id: string) => {
@@ -767,14 +830,128 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     });
   };
 
-  // Assistant Chat handler with smart contextual answering & SQLite logs
-  const sendChatMessage = async (text: string, attachment?: string) => {
+  // Assistant Chat handler with smart contextual answering, attachment size alignment & SQLite logs
+  const sendChatMessage = async (
+    text: string,
+    attachment?: string | PendingAssistantAttachment[]
+  ): Promise<boolean> => {
+    setChatError(null);
+    const pendingAttachments: PendingAssistantAttachment[] = Array.isArray(attachment)
+      ? attachment
+      : [];
+    const legacyAttachment = typeof attachment === 'string' ? attachment : undefined;
+
+    if (!text.trim() && pendingAttachments.length === 0 && !legacyAttachment) {
+      return false;
+    }
+
+    if (pendingAttachments.length > MAX_ATTACHMENT_COUNT) {
+      setChatError(
+        `Vous ne pouvez pas envoyer plus de ${MAX_ATTACHMENT_COUNT} pièces jointes par message.`
+      );
+      return false;
+    }
+
+    let totalRawBytes = 0;
+    let totalEncodedBytes = 0;
+
+    for (const att of pendingAttachments) {
+      if (att.rawSize > MAX_FILE_BYTES || att.encodedSize > MAX_FILE_BASE64_BYTES) {
+        setChatError(
+          `Le fichier "${att.name}" (${formatBytesFr(att.rawSize)} brut / ${formatBytesFr(att.encodedSize)} encodé) dépasse la limite par fichier de ${formatBytesFr(MAX_FILE_BYTES)} brut (~${formatBytesFr(MAX_FILE_BASE64_BYTES)} en Base64).`
+        );
+        return false;
+      }
+      totalRawBytes += att.rawSize;
+      totalEncodedBytes += att.encodedSize;
+    }
+
+    if (totalRawBytes > MAX_TOTAL_RAW_BYTES || totalEncodedBytes > MAX_TOTAL_ENCODED_BYTES) {
+      setChatError(
+        `La taille totale des pièces jointes (${formatBytesFr(totalRawBytes)} brut / ${formatBytesFr(totalEncodedBytes)} encodé) dépasse la limite du serveur (${formatBytesFr(MAX_TOTAL_RAW_BYTES)} brut / ~${formatBytesFr(MAX_TOTAL_ENCODED_BYTES)} encodé).`
+      );
+      return false;
+    }
+
+    const effectiveText =
+      text.trim() ||
+      (pendingAttachments.length > 0
+        ? 'Analyse ces pièces jointes et aide-moi en conséquence.'
+        : '');
+
+    const projectsSummary = projects.map(({ id, title, startDate, endDate }) => ({
+      id,
+      title,
+      startDate,
+      endDate,
+    }));
+
+    const systemContext = `
+Tu es Ketrika IA, l'assistant intelligent intégré dans l'application de productivité Ketrika.
+Tu assistes ${profile.name} (${profile.email}, basée à ${profile.address}).
+L'utilisateur a actuellement ${projects.length} projets (${projects.slice(0, 10).map(p => `"${p.title}" [${p.startDate} -> ${p.endDate}]`).join(', ')}).
+Il a ${tasks.length} tâches dont ${tasks.filter(t => !t.completed).length} en attente.
+Son solde financier actuel est de ${currentBalance.toLocaleString('fr-FR')} Ar.
+Date du jour : ${new Date().toISOString().split('T')[0]}.
+Pour créer ou modifier un projet via les fonctions IA, utilise toujours le format AAAA-MM-JJ (ou JJ/MM/AAAA) et assure-toi que la date de fin est postérieure ou égale à la date de début.
+Réponds toujours en français, de façon élégante, concise, proactive, bienveillante et orientée productivité.
+    `;
+
+    const serverAttachments: AssistantAttachmentPayload[] = pendingAttachments.map((att) => ({
+      id: att.id,
+      name: att.name,
+      mimeType: att.mimeType,
+      kind: att.kind,
+      rawSize: att.rawSize,
+      ...(att.kind === 'image' ? { base64Data: att.base64Data } : { textContent: att.textContent }),
+    }));
+
+    const requestBody = {
+      message: effectiveText,
+      context: systemContext,
+      projectsContext: projectsSummary,
+      ...(serverAttachments.length > 0 ? { attachments: serverAttachments } : {}),
+    };
+
+    const serializedSize = new TextEncoder().encode(JSON.stringify(requestBody)).length;
+    if (serializedSize > MAX_JSON_PAYLOAD_BYTES) {
+      setChatError(
+        `La requête totale (${formatBytesFr(serializedSize)} avec encodage Base64) dépasse la limite maximale acceptée par le serveur (${formatBytesFr(MAX_JSON_PAYLOAD_BYTES)}). Réduisez ou retirez une pièce jointe.`
+      );
+      return false;
+    }
+
+    const attachmentsMeta: AttachmentMeta[] = pendingAttachments.map((att) => ({
+      id: att.id,
+      name: att.name,
+      mimeType: att.mimeType,
+      kind: att.kind,
+      rawSize: att.rawSize,
+      encodedSize: att.encodedSize,
+      previewUrl: att.previewUrl,
+    }));
+
+    const serializedAttachmentMeta =
+      attachmentsMeta.length > 0
+        ? JSON.stringify(
+            attachmentsMeta.map(({ id, name, mimeType, kind, rawSize, encodedSize }) => ({
+              id,
+              name,
+              mimeType,
+              kind,
+              rawSize,
+              encodedSize,
+            }))
+          )
+        : legacyAttachment;
+
     const userMsg: ChatMessage = {
       id: `msg-${Date.now()}`,
       role: 'user',
-      text,
+      text: effectiveText,
       timestamp: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
-      attachment,
+      attachment: serializedAttachmentMeta,
+      attachmentsMeta: attachmentsMeta.length > 0 ? attachmentsMeta : undefined,
     };
 
     markSliceMutated('chat');
@@ -783,28 +960,125 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setIsGeneratingAI(true);
 
     try {
-      const systemContext = `
-Tu es Ketrika IA, l'assistant intelligent intégré dans l'application de productivité Ketrika.
-Tu assistes ${profile.name} (${profile.email}, basée à ${profile.address}).
-L'utilisateur a actuellement ${projects.length} projets (dont "${projects[0]?.title || 'Ketrika'}" à ${projects[0]?.progress || 70}%).
-Il a ${tasks.length} tâches dont ${tasks.filter(t => !t.completed).length} en attente.
-Son solde financier actuel est de ${currentBalance.toLocaleString('fr-FR')} Ar.
-Réponds toujours en français, de façon élégante, concise, proactive, bienveillante et orientée productivité.
-      `;
-
       let replyText = '';
 
       try {
         const res = await fetch('/api/assistant', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: text, context: systemContext }),
+          body: JSON.stringify(requestBody),
         });
+        const data = await res.json().catch(() => null);
         if (res.ok) {
-          const data = await res.json();
-          if (data && data.reply) {
+          const functionCalls = Array.isArray(data?.functionCalls) ? data.functionCalls : [];
+          const actionMessages: string[] = [];
+
+          for (const fc of functionCalls) {
+            if (fc?.name === 'create_project') {
+              const check = validateProjectAiFunctionCall('create_project', fc.args, projectsSummary);
+              if (!check.valid || !check.normalizedArgs) {
+                const errText = check.error || 'Dates de projet invalides.';
+                setChatError(errText);
+                actionMessages.push(`Impossible de créer le projet : ${errText}`);
+                continue;
+              }
+              const args = check.normalizedArgs;
+              const priorityRaw = typeof args.priority === 'string' ? args.priority : 'Moyenne';
+              const priority: Project['priority'] =
+                priorityRaw === 'Haute' || priorityRaw === 'Moyenne' || priorityRaw === 'Basse'
+                  ? priorityRaw
+                  : 'Moyenne';
+
+              const result = addProject({
+                title: String(args.title),
+                description:
+                  typeof args.description === 'string' && args.description.trim()
+                    ? args.description.trim()
+                    : 'Projet créé avec Ketrika IA.',
+                startDate: String(args.startDate),
+                endDate: String(args.endDate),
+                priority,
+                status: 'En cours',
+                progress: 0,
+                category:
+                  typeof args.category === 'string' && args.category.trim()
+                    ? args.category.trim()
+                    : 'Général',
+                image: '/assets/images/project_code.jpg',
+                tasks: [],
+              });
+
+              if (!result.ok) {
+                const errText = result.error || 'Dates de projet invalides.';
+                setChatError(errText);
+                actionMessages.push(`Impossible de créer le projet : ${errText}`);
+              } else {
+                actionMessages.push(
+                  `Le projet **« ${String(args.title)} »** a bien été créé (du ${String(args.startDate)} au ${String(args.endDate)}).`
+                );
+              }
+            } else if (fc?.name === 'update_project') {
+              const check = validateProjectAiFunctionCall('update_project', fc.args, projectsSummary);
+              if (!check.valid || !check.normalizedArgs) {
+                const errText = check.error || 'Dates de projet invalides.';
+                setChatError(errText);
+                actionMessages.push(`Impossible de modifier le projet : ${errText}`);
+                continue;
+              }
+              const args = check.normalizedArgs;
+              const targetId = typeof args.projectId === 'string' ? args.projectId.trim() : '';
+              const targetTitle =
+                typeof args.projectTitle === 'string' ? args.projectTitle.trim().toLowerCase() : '';
+              const targetProj = projects.find(
+                (p) =>
+                  (targetId && p.id === targetId) ||
+                  (targetTitle && p.title.toLowerCase() === targetTitle)
+              );
+
+              if (!targetProj) {
+                const errText = 'Projet introuvable pour effectuer la modification.';
+                setChatError(errText);
+                actionMessages.push(errText);
+                continue;
+              }
+
+              const updates: Partial<Project> = {};
+              if (typeof args.title === 'string' && args.title.trim()) updates.title = args.title.trim();
+              if (typeof args.description === 'string') updates.description = args.description.trim();
+              if (typeof args.category === 'string' && args.category.trim()) {
+                updates.category = args.category.trim();
+              }
+              if (args.priority === 'Haute' || args.priority === 'Moyenne' || args.priority === 'Basse') {
+                updates.priority = args.priority;
+              }
+              if (args.status === 'En cours' || args.status === 'À faire' || args.status === 'Terminé') {
+                updates.status = args.status;
+              }
+              if (typeof args.startDate === 'string') updates.startDate = args.startDate;
+              if (typeof args.endDate === 'string') updates.endDate = args.endDate;
+
+              const result = updateProject(targetProj.id, updates);
+              if (!result.ok) {
+                const errText = result.error || 'Dates de projet invalides.';
+                setChatError(errText);
+                actionMessages.push(`Impossible de modifier le projet : ${errText}`);
+              } else {
+                actionMessages.push(`Le projet **« ${updates.title || targetProj.title} »** a bien été mis à jour.`);
+              }
+            }
+          }
+
+          if (actionMessages.length > 0) {
+            replyText = [data?.reply, ...actionMessages].filter(Boolean).join('\n\n');
+          } else if (data && data.reply) {
             replyText = data.reply;
           }
+        } else if (
+          (res.status === 413 || res.status === 400 || res.status === 415) &&
+          data?.error
+        ) {
+          setChatError(data.error);
+          replyText = `Impossible de traiter la requête : ${data.error}`;
         }
       } catch {
         // Fall back to local contextual answers if server is unreachable
@@ -812,9 +1086,12 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
 
       if (!replyText) {
         await new Promise(r => setTimeout(r, 400));
-        const lower = text.toLowerCase();
-        
-        if (lower.includes('idée') || lower.includes('projet')) {
+        const lower = effectiveText.toLowerCase();
+
+        if (pendingAttachments.length > 0) {
+          const names = pendingAttachments.map(a => `${a.name} (${formatBytesFr(a.rawSize)})`).join(', ');
+          replyText = `J'ai bien reçu vos pièces jointes : **${names}**.\nLe service Gemini n'est pas joignable pour l'analyse distante actuellement, mais vos fichiers ont été validés dans la limite autorisée et votre message est enregistré en local.`;
+        } else if (lower.includes('idée') || lower.includes('projet')) {
           replyText = `Voici d'excellentes idées pour booster vos projets :\n• **Ketrika v2** : Déployez le module IA avec commandes vocales en direct.\n• **Automatisation** : Créez des règles automatiques pour catégoriser vos dépenses dès réception.\n• **Export Rapport** : Générez automatiquement un bilan hebdomadaire pour votre équipe.`;
         } else if (lower.includes('tâche') || lower.includes('organiser')) {
           const pending = tasks.filter(t => !t.completed);
@@ -837,6 +1114,7 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
 
       setChatMessages(prev => [...prev, assistantMsg]);
       persistAsync(sqliteService.saveChatMessage(assistantMsg), 'saveChatMessage');
+      return true;
     } catch {
       const errorMsg: ChatMessage = {
         id: `msg-${Date.now() + 1}`,
@@ -846,6 +1124,7 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
       };
       setChatMessages(prev => [...prev, errorMsg]);
       persistAsync(sqliteService.saveChatMessage(errorMsg), 'saveChatMessage');
+      return false;
     } finally {
       setIsGeneratingAI(false);
     }
@@ -853,6 +1132,7 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
 
   const clearChat = () => {
     markSliceMutated('chat');
+    setChatError(null);
     setChatMessages([initialChatMessages[0]]);
     persistAsync(sqliteService.clearChatMessages(), 'clearChatMessages');
   };
@@ -1012,6 +1292,8 @@ Réponds toujours en français, de façon élégante, concise, proactive, bienve
       addDocument,
       chatMessages,
       isGeneratingAI,
+      chatError,
+      clearChatError,
       sendChatMessage,
       clearChat,
       exportData,
